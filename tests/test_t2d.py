@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -116,3 +117,57 @@ def test_parse_many_uses_asyncio_when_backend_supports_agenerate() -> None:
 
     assert result == [{"name": "Alice"}, {"name": "Bob"}]
     assert len(backend.async_calls) == 2
+
+
+class _ConcurrencyTrackingBackend:
+    """Tracks how many agenerate() calls are in flight at once."""
+
+    def __init__(self) -> None:
+        self._in_flight = 0
+        self.max_concurrent_seen = 0
+
+    @property
+    def capabilities(self) -> set[str]:
+        return set()
+
+    def generate(self, prompt: str, *, schema: dict | None = None) -> str:
+        raise AssertionError("sync generate should not be used when agenerate is available")
+
+    async def agenerate(self, prompt: str, *, schema: dict | None = None) -> str:
+        self._in_flight += 1
+        self.max_concurrent_seen = max(self.max_concurrent_seen, self._in_flight)
+        await asyncio.sleep(0.01)
+        self._in_flight -= 1
+        return json.dumps({"name": "X"})
+
+
+def test_parse_many_respects_max_concurrency() -> None:
+    backend = _ConcurrencyTrackingBackend()
+    texts = [f"text {i}" for i in range(10)]
+
+    result = parse_many(texts, SCHEMA, backend=backend, max_concurrency=2)
+
+    assert len(result) == 10
+    assert backend.max_concurrent_seen <= 2
+
+
+class _PartiallyFailingAsyncBackend:
+    @property
+    def capabilities(self) -> set[str]:
+        return set()
+
+    def generate(self, prompt: str, *, schema: dict | None = None) -> str:
+        raise AssertionError("sync generate should not be used when agenerate is available")
+
+    async def agenerate(self, prompt: str, *, schema: dict | None = None) -> str:
+        if "fail" in prompt:
+            return "not json"
+        return json.dumps({"name": "OK"})
+
+
+def test_parse_many_raises_aggregated_error_on_partial_failure() -> None:
+    backend = _PartiallyFailingAsyncBackend()
+    texts = ["ok text 1", "please fail here", "ok text 2"]
+
+    with pytest.raises(ParseError, match=r"failed for 1/3"):
+        parse_many(texts, SCHEMA, backend=backend, max_retries=1)

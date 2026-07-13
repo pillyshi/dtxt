@@ -73,17 +73,34 @@ conformance on their own:
   the original schema is still checked afterwards.
 
 So all three go through dtxt's retry + validation loop the same way.
-`parse_many` runs concurrently via asyncio for Anthropic/OpenAI; `LlamaCpp`
-processes it sequentially in-process so its prompt cache stays warm.
+`parse_many` runs concurrently via asyncio for Anthropic/OpenAI, bounded by
+`max_concurrency` (default 8) to avoid tripping rate limits; `LlamaCpp`
+processes it sequentially in-process so its prompt cache stays warm. A
+partial batch failure raises one `ParseError` naming how many texts failed
+and the first failing index, rather than aborting on the first error.
+
+Style is controllable at both the schema and call level:
+
+```python
+schema = Schema({
+    "type": "object",
+    "properties": {"name": {"type": "string"}},
+    "required": ["name"],
+    "x-dtxt-style": "formal, third person",  # schema-wide default
+})
+dtxt.render(obj, schema)                       # uses "formal, third person"
+dtxt.render(obj, schema, style="casual, upbeat")  # overrides it for this call
+```
 
 ## Status
 
-Early development (`0.0.x`). M1-M3 of the milestone plan are done:
-`Schema`, `parse` / `parse_many` (asyncio-parallel for API backends),
-`render`, `infer_schema` (sampling + merge, `min_coverage`), `check_roundtrip`,
-`configure`, a mock backend for testing, and the Anthropic / OpenAI /
-llama.cpp backends. See `CLAUDE.md` for what's next (M5: batch
-optimization and D2T style control ahead of the `0.1.0` PyPI release).
+Early development (`0.0.x`). M1-M5 of the milestone plan are implemented:
+`Schema`, `parse` / `parse_many` (asyncio-parallel + bounded concurrency
+for API backends), `render` (with schema-level and per-call style
+control), `infer_schema` (sampling + merge, `min_coverage`),
+`check_roundtrip`, `configure`, a mock backend for testing, and the
+Anthropic / OpenAI / llama.cpp backends. Not yet done: publishing to PyPI
+as `0.1.0` -- see `CLAUDE.md` for the milestone plan.
 
 ## Development
 

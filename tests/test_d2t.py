@@ -31,3 +31,40 @@ def test_render_prompt_includes_object_and_field_guidance() -> None:
     assert "Alice" in prompt
     assert "the person's full name" in prompt
     assert "friendly" in prompt
+
+
+def test_render_without_style_shows_none_placeholder() -> None:
+    backend = MockBackend(responses=["ignored"])
+    render({"name": "Alice"}, SCHEMA, backend=backend)
+    prompt, _ = backend.calls[0]
+    assert "# Overall style\n(none)" in prompt
+
+
+def test_render_uses_schema_root_style_by_default() -> None:
+    schema = Schema(
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "x-dtxt-style": "formal, third person",
+        }
+    )
+    backend = MockBackend(responses=["ignored"])
+    render({"name": "Alice"}, schema, backend=backend)
+    prompt, _ = backend.calls[0]
+    assert "# Overall style\nformal, third person" in prompt
+
+
+def test_render_style_argument_overrides_schema_style() -> None:
+    schema = Schema(
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+            "x-dtxt-style": "formal",
+        }
+    )
+    backend = MockBackend(responses=["ignored"])
+    render({"name": "Alice"}, schema, style="casual, upbeat", backend=backend)
+    prompt, _ = backend.calls[0]
+    assert "# Overall style\ncasual, upbeat" in prompt

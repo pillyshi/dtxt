@@ -32,10 +32,22 @@ def render(
     obj: dict[str, Any],
     schema: Schema,
     *,
+    style: str | None = None,
     backend: Backend | None = None,
 ) -> str:
-    """Convert ``obj`` into text, guided by ``schema``'s ``x-dtxt-*`` metadata."""
+    """Convert ``obj`` into text, guided by ``schema``'s ``x-dtxt-*`` metadata.
+
+    ``style`` overrides the schema's own ``x-dtxt-style`` (its root-level
+    style hint) for this call; per-field style hints still apply on top of
+    either one.
+    """
     resolved = resolve_backend("render", backend)
     json_schema = schema.to_json_schema()
-    prompt = build_d2t_prompt(obj, json_schema, field_guidance=_field_guidance(schema))
+    effective_style = style if style is not None else schema.style
+    prompt = build_d2t_prompt(
+        obj,
+        json_schema,
+        style=effective_style or "(none)",
+        field_guidance=_field_guidance(schema),
+    )
     return resolved.generate(prompt)

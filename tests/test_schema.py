@@ -77,3 +77,13 @@ def test_iter_errors_reports_problems() -> None:
     schema = Schema(_person_json_schema())
     errors = schema.iter_errors({"age": "not-a-number"})
     assert len(errors) >= 1
+
+
+def test_schema_style_reads_root_level_hint() -> None:
+    schema = Schema({"type": "object", "properties": {}, "x-dtxt-style": "formal, concise"})
+    assert schema.style == "formal, concise"
+
+
+def test_schema_style_defaults_to_none() -> None:
+    schema = Schema({"type": "object", "properties": {}})
+    assert schema.style is None

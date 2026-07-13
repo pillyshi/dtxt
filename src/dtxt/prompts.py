@@ -41,6 +41,9 @@ You convert a JSON object into natural, fluent text that expresses every non-nul
 # JSON Schema
 {schema}
 
+# Overall style
+{style}
+
 # Field guidance
 {field_guidance}
 
@@ -81,12 +84,14 @@ def build_d2t_prompt(
     obj: dict[str, Any],
     schema: dict[str, Any],
     *,
+    style: str = "(none)",
     field_guidance: str = "(none)",
     template: str = D2T_TEMPLATE,
 ) -> str:
     return template.format(
         schema=json.dumps(schema, ensure_ascii=False, indent=2),
         obj=json.dumps(obj, ensure_ascii=False, indent=2),
+        style=style,
         field_guidance=field_guidance,
     )
 

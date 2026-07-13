@@ -77,6 +77,16 @@ class Schema:
     def required(self) -> list[str]:
         return list(self._json_schema.get("required", []))
 
+    @property
+    def style(self) -> str | None:
+        """Schema-wide D2T style hint (``x-dtxt-style`` on the schema root).
+
+        Distinct from ``field_style()``, which is per-field. ``render()``'s
+        ``style=`` argument overrides this for a single call.
+        """
+        result = self._json_schema.get(_EXT_STYLE)
+        return result if isinstance(result, str) else None
+
     def field_description(self, field_name: str) -> str | None:
         result = self.properties.get(field_name, {}).get(_EXT_DESCRIPTION)
         return result if isinstance(result, str) else None
