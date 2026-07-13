@@ -43,6 +43,10 @@ packages = ["dtxt"]
 mypy_path = "src"
 explicit_package_bases = true
 
+[[tool.mypy.overrides]]
+module = ["anthropic.*", "openai.*", "llama_cpp.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

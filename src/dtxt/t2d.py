@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -75,8 +76,66 @@ def parse_many(
 ) -> list[dict[str, Any]]:
     """Batch version of ``parse``.
 
-    Sequential by default; async API backends optimize this internally by
-    overriding this function's backend resolution with their own executor.
+    When the resolved backend exposes an ``agenerate`` coroutine (API
+    backends such as Anthropic/OpenAI), texts are parsed concurrently via
+    asyncio. Otherwise falls back to sequential ``parse`` calls.
     """
     resolved = resolve_backend("parse", backend)
+    if not texts:
+        return []
+    if getattr(resolved, "agenerate", None) is not None:
+        return asyncio.run(_parse_many_async(texts, schema, resolved, max_retries))
     return [parse(text, schema, backend=resolved, max_retries=max_retries) for text in texts]
+
+
+async def _parse_many_async(
+    texts: list[str],
+    schema: Schema,
+    backend: Any,
+    max_retries: int,
+) -> list[dict[str, Any]]:
+    results = await asyncio.gather(
+        *(_parse_async(text, schema, backend, max_retries) for text in texts)
+    )
+    return list(results)
+
+
+async def _parse_async(
+    text: str,
+    schema: Schema,
+    backend: Any,
+    max_retries: int,
+) -> dict[str, Any]:
+    json_schema = schema.to_json_schema()
+    prompt = build_t2d_prompt(text, json_schema)
+    attempts = 1 if CONSTRAINED_DECODING in backend.capabilities else max_retries
+
+    last_error: Exception = ParseError("backend produced no output")
+    raw = await backend.agenerate(prompt, schema=json_schema)
+    for attempt in range(attempts):
+        is_last_attempt = attempt == attempts - 1
+        try:
+            obj = extract_json(raw)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            if is_last_attempt:
+                break
+            raw = await backend.agenerate(
+                build_t2d_retry_prompt(prompt, raw, [f"invalid JSON: {exc}"]),
+                schema=json_schema,
+            )
+            continue
+
+        errors = schema.iter_errors(obj)
+        if not errors:
+            return dict(obj)
+        last_error = ValueError("; ".join(errors))
+        if is_last_attempt:
+            break
+        raw = await backend.agenerate(
+            build_t2d_retry_prompt(prompt, raw, errors), schema=json_schema
+        )
+
+    raise ParseError(
+        f"failed to parse a schema-conformant object after {attempts} attempt(s): {last_error}"
+    ) from last_error
