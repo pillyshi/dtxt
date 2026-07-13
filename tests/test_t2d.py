@@ -41,11 +41,35 @@ def test_parse_raises_after_max_retries_exhausted() -> None:
         parse("text", SCHEMA, backend=backend, max_retries=2)
 
 
-def test_constrained_decoding_backend_skips_retry_loop() -> None:
-    backend = MockBackend(responses=["bad"], capabilities={"constrained_decoding"})
+def test_constrained_decoding_backend_still_honors_max_retries() -> None:
+    # A constrained-decoding backend (e.g. llama.cpp + GBNF) only
+    # guarantees the grammar-facing part of the schema; keywords it can't
+    # enforce (format/pattern) still rely on this retry loop, so
+    # `max_retries` applies the same as for any other backend.
+    backend = MockBackend(responses=["bad", "bad"], capabilities={"constrained_decoding"})
     with pytest.raises(ParseError):
-        parse("text", SCHEMA, backend=backend, max_retries=5)
-    assert len(backend.calls) == 1
+        parse("text", SCHEMA, backend=backend, max_retries=2)
+    assert len(backend.calls) == 2
+
+
+def test_constrained_decoding_backend_retries_on_semantic_validation_failure() -> None:
+    # Simulates the two-stage split: the grammar can't enforce `pattern`,
+    # so a first attempt violating it should still be retried and can
+    # succeed on a later attempt via post-hoc validation.
+    schema_with_pattern = Schema(
+        {
+            "type": "object",
+            "properties": {"code": {"type": "string", "pattern": "^[A-Z]{3}$"}},
+            "required": ["code"],
+        }
+    )
+    backend = MockBackend(
+        responses=[json.dumps({"code": "abc"}), json.dumps({"code": "ABC"})],
+        capabilities={"constrained_decoding"},
+    )
+    result = parse("some text", schema_with_pattern, backend=backend, max_retries=2)
+    assert result == {"code": "ABC"}
+    assert len(backend.calls) == 2
 
 
 def test_parse_many_processes_each_text() -> None:

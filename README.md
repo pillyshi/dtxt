@@ -57,25 +57,33 @@ Swap `MockBackend` for a real one:
 ```python
 dtxt.configure(
     infer=dtxt.backends.Anthropic("claude-sonnet-4-6"),
-    parse=dtxt.backends.OpenAI("gpt-5"),
+    parse=dtxt.backends.LlamaCpp("model.gguf", n_ctx=8192),
     render=dtxt.backends.Anthropic("claude-sonnet-4-6"),
 )
 ```
 
 `Anthropic` uses forced tool use to get structured output; `OpenAI` uses
-`response_format={"type": "json_schema", ...}`. Neither guarantees full
-schema conformance the way grammar-constrained decoding does, so both go
-through dtxt's retry + validation loop. `parse_many` runs concurrently via
-asyncio for these backends.
+`response_format={"type": "json_schema", ...}`; `LlamaCpp` constrains
+decoding at the grammar level via GBNF. None of them guarantee full schema
+conformance on their own:
+
+- Anthropic/OpenAI guarantee valid JSON syntax, not every schema keyword.
+- `LlamaCpp` strips constructs GBNF can't reliably express (`format`,
+  `pattern`, deeply nested objects/arrays) from the grammar-facing schema;
+  the original schema is still checked afterwards.
+
+So all three go through dtxt's retry + validation loop the same way.
+`parse_many` runs concurrently via asyncio for Anthropic/OpenAI; `LlamaCpp`
+processes it sequentially in-process so its prompt cache stays warm.
 
 ## Status
 
-Early development (`0.0.x`). Implemented so far: `Schema`, `parse` /
-`parse_many` (with asyncio-parallel batching for API backends), `render`,
-`infer_schema`, `check_roundtrip`, `configure`, a mock backend for testing,
-and the Anthropic / OpenAI backends. The llama.cpp backend (constrained
-decoding via GBNF) is not implemented yet -- see `CLAUDE.md` for the
-milestone plan.
+Early development (`0.0.x`). M1-M3 of the milestone plan are done:
+`Schema`, `parse` / `parse_many` (asyncio-parallel for API backends),
+`render`, `infer_schema` (sampling + merge, `min_coverage`), `check_roundtrip`,
+`configure`, a mock backend for testing, and the Anthropic / OpenAI /
+llama.cpp backends. See `CLAUDE.md` for what's next (M5: batch
+optimization and D2T style control ahead of the `0.1.0` PyPI release).
 
 ## Development
 

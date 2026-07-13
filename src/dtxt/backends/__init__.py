@@ -15,11 +15,12 @@ from typing import Any
 from .base import Backend
 from .mock import MockBackend
 
-__all__ = ["Backend", "MockBackend", "Anthropic", "OpenAI"]
+__all__ = ["Backend", "MockBackend", "Anthropic", "OpenAI", "LlamaCpp"]
 
 _LAZY: dict[str, tuple[str, str]] = {
     "Anthropic": (".anthropic", "Anthropic"),
     "OpenAI": (".openai", "OpenAI"),
+    "LlamaCpp": (".llamacpp", "LlamaCpp"),
 }
 
 

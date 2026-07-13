@@ -8,7 +8,7 @@ from typing import Any
 
 from ._config import resolve_backend
 from ._util import extract_json
-from .backends.base import CONSTRAINED_DECODING, Backend
+from .backends.base import Backend
 from .prompts import build_t2d_prompt, build_t2d_retry_prompt
 from .schema import Schema
 
@@ -34,9 +34,11 @@ def parse(
     json_schema = schema.to_json_schema()
     prompt = build_t2d_prompt(text, json_schema)
 
-    # A constrained-decoding backend guarantees schema-conformant JSON at the
-    # grammar level, so there is nothing for a retry loop to fix.
-    attempts = 1 if CONSTRAINED_DECODING in resolved.capabilities else max_retries
+    # A constrained-decoding backend only guarantees the grammar-facing part
+    # of the schema (see backends/llamacpp.py's two-stage split); keywords
+    # like `format`/`pattern` still need this retry + validation loop, so
+    # `max_retries` applies uniformly regardless of backend capabilities.
+    attempts = max_retries
 
     last_error: Exception = ParseError("backend produced no output")
     raw = resolved.generate(prompt, schema=json_schema)
@@ -108,7 +110,7 @@ async def _parse_async(
 ) -> dict[str, Any]:
     json_schema = schema.to_json_schema()
     prompt = build_t2d_prompt(text, json_schema)
-    attempts = 1 if CONSTRAINED_DECODING in backend.capabilities else max_retries
+    attempts = max_retries
 
     last_error: Exception = ParseError("backend produced no output")
     raw = await backend.agenerate(prompt, schema=json_schema)
