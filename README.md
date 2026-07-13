@@ -94,13 +94,13 @@ dtxt.render(obj, schema, style="casual, upbeat")  # overrides it for this call
 
 ## Status
 
-Early development (`0.0.x`). M1-M5 of the milestone plan are implemented:
-`Schema`, `parse` / `parse_many` (asyncio-parallel + bounded concurrency
-for API backends), `render` (with schema-level and per-call style
-control), `infer_schema` (sampling + merge, `min_coverage`),
-`check_roundtrip`, `configure`, a mock backend for testing, and the
-Anthropic / OpenAI / llama.cpp backends. Not yet done: publishing to PyPI
-as `0.1.0` -- see `CLAUDE.md` for the milestone plan.
+Released as [`dtxt` `0.1.0`](https://pypi.org/project/dtxt/0.1.0/) on PyPI.
+M1-M5 of the milestone plan are implemented: `Schema`, `parse` /
+`parse_many` (asyncio-parallel + bounded concurrency for API backends),
+`render` (with schema-level and per-call style control), `infer_schema`
+(sampling + merge, `min_coverage`), `check_roundtrip`, `configure`, a mock
+backend for testing, and the Anthropic / OpenAI / llama.cpp backends. See
+`CHANGELOG.md` for release notes and `CLAUDE.md` for what's next.
 
 ## Development
 
