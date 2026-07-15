@@ -61,6 +61,79 @@ def test_missing_package_raises_helpful_error() -> None:
         backend.generate("prompt")
 
 
+def test_requires_model_path_or_repo() -> None:
+    with pytest.raises(ValueError, match="model_path"):
+        LlamaCpp()
+
+
+def test_rejects_both_model_path_and_repo() -> None:
+    with pytest.raises(ValueError, match="model_path"):
+        LlamaCpp("model.gguf", repo_id="org/repo", filename="model.gguf")
+
+
+def test_rejects_repo_id_without_filename() -> None:
+    with pytest.raises(ValueError, match="repo_id"):
+        LlamaCpp(repo_id="org/repo")
+
+
+class _FakeLlamaCppModule:
+    def __init__(self, fake_llama: _FakeLlama) -> None:
+        self._fake_llama = fake_llama
+        self.from_pretrained_calls: list[dict[str, Any]] = []
+        self.llama_calls: list[dict[str, Any]] = []
+
+        module = self
+
+        class _Llama:
+            def __new__(cls, **kwargs: Any) -> Any:
+                module.llama_calls.append(kwargs)
+                return module._fake_llama
+
+            @classmethod
+            def from_pretrained(cls, **kwargs: Any) -> Any:
+                module.from_pretrained_calls.append(kwargs)
+                return module._fake_llama
+
+        self.Llama = _Llama
+
+
+def test_repo_id_and_filename_use_from_pretrained(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_llama = _FakeLlama("ok")
+    fake_module = _FakeLlamaCppModule(fake_llama)
+    monkeypatch.setattr("dtxt.backends.llamacpp._import_llama_cpp", lambda: fake_module)
+    backend = LlamaCpp(
+        repo_id="org/repo",
+        filename="model.gguf",
+        n_ctx=8192,
+        n_gpu_layers=32,
+        flash_attn=True,
+    )
+
+    backend.generate("prompt")
+
+    call = fake_module.from_pretrained_calls[0]
+    assert call["repo_id"] == "org/repo"
+    assert call["filename"] == "model.gguf"
+    assert call["n_ctx"] == 8192
+    assert call["n_gpu_layers"] == 32
+    assert call["flash_attn"] is True
+    assert not fake_module.llama_calls
+
+
+def test_model_path_passes_n_gpu_layers_and_flash_attn(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_llama = _FakeLlama("ok")
+    fake_module = _FakeLlamaCppModule(fake_llama)
+    monkeypatch.setattr("dtxt.backends.llamacpp._import_llama_cpp", lambda: fake_module)
+    backend = LlamaCpp("model.gguf", n_gpu_layers=16, flash_attn=True)
+
+    backend.generate("prompt")
+
+    call = fake_module.llama_calls[0]
+    assert call["model_path"] == "model.gguf"
+    assert call["n_gpu_layers"] == 16
+    assert call["flash_attn"] is True
+
+
 def test_grammar_safe_schema_strips_format_and_pattern() -> None:
     schema = {
         "type": "object",

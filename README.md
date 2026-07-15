@@ -62,6 +62,21 @@ dtxt.configure(
 )
 ```
 
+`LlamaCpp` locates a model either by local path (`model_path`) or by
+pulling from the Hugging Face Hub (`repo_id` + `filename`, forwarded to
+`Llama.from_pretrained`); `n_gpu_layers` and `flash_attn`, among other
+`llama-cpp-python` constructor options, are also exposed:
+
+```python
+dtxt.backends.LlamaCpp(
+    repo_id="TheBloke/some-model-GGUF",
+    filename="some-model.Q4_K_M.gguf",
+    n_ctx=8192,
+    n_gpu_layers=32,
+    flash_attn=True,
+)
+```
+
 `Anthropic` uses forced tool use to get structured output; `OpenAI` uses
 `response_format={"type": "json_schema", ...}`; `LlamaCpp` constrains
 decoding at the grammar level via GBNF. None of them guarantee full schema

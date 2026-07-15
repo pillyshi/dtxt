@@ -72,6 +72,10 @@ def _strip(node: Any, *, depth: int, max_depth: int) -> Any:
 class LlamaCpp:
     """Backend for local GGUF models via ``llama-cpp-python``.
 
+    A model is located either by local path (``model_path``) or by pulling
+    from the Hugging Face Hub (``repo_id`` + ``filename``, forwarded to
+    ``Llama.from_pretrained``). Exactly one of the two must be given.
+
     Small local models are prompt-sensitive, so the prompt can be wrapped
     in a model-specific chat template by passing ``prompt_template`` (a
     ``str.format`` template with a single ``{prompt}`` placeholder).
@@ -84,17 +88,36 @@ class LlamaCpp:
 
     def __init__(
         self,
-        model_path: str,
+        model_path: str | None = None,
         *,
+        repo_id: str | None = None,
+        filename: str | None = None,
         n_ctx: int = 4096,
+        n_gpu_layers: int = 0,
+        flash_attn: bool = False,
         max_tokens: int = 1024,
         max_grammar_depth: int = DEFAULT_MAX_GRAMMAR_DEPTH,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
         llama: Any | None = None,
         **llama_kwargs: Any,
     ) -> None:
+        if llama is None:
+            has_path = model_path is not None
+            has_repo = repo_id is not None or filename is not None
+            if has_path == has_repo:
+                raise ValueError(
+                    "LlamaCpp requires exactly one of `model_path` or "
+                    "`repo_id`+`filename` to locate a model."
+                )
+            if has_repo and (repo_id is None or filename is None):
+                raise ValueError("`repo_id` and `filename` must be given together.")
+
         self._model_path = model_path
+        self._repo_id = repo_id
+        self._filename = filename
         self._n_ctx = n_ctx
+        self._n_gpu_layers = n_gpu_layers
+        self._flash_attn = flash_attn
         self._max_tokens = max_tokens
         self._max_grammar_depth = max_grammar_depth
         self._prompt_template = prompt_template
@@ -104,9 +127,18 @@ class LlamaCpp:
     def _get_llama(self) -> Any:
         if self._llama is None:
             llama_cpp = _import_llama_cpp()
-            self._llama = llama_cpp.Llama(
-                model_path=self._model_path, n_ctx=self._n_ctx, **self._llama_kwargs
-            )
+            kwargs: dict[str, Any] = {
+                "n_ctx": self._n_ctx,
+                "n_gpu_layers": self._n_gpu_layers,
+                "flash_attn": self._flash_attn,
+                **self._llama_kwargs,
+            }
+            if self._model_path is not None:
+                self._llama = llama_cpp.Llama(model_path=self._model_path, **kwargs)
+            else:
+                self._llama = llama_cpp.Llama.from_pretrained(
+                    repo_id=self._repo_id, filename=self._filename, **kwargs
+                )
         return self._llama
 
     @property

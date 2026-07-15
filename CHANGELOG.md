@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] - 2026-07-16
+
+### Added
+
+- `LlamaCpp`: model can now be located via `repo_id`+`filename` (forwarded
+  to `Llama.from_pretrained`) as an alternative to `model_path`. Added
+  explicit `n_gpu_layers` and `flash_attn` constructor parameters.
+
 ## [0.1.0] - 2026-07-14
 
 Initial public release.
