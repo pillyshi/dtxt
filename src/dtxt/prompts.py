@@ -61,6 +61,18 @@ You infer a JSON Schema that describes the common structure shared by the follow
 Respond with ONLY a JSON Schema object (type "object", with "properties" and "required").
 Do not include markdown fences or commentary."""
 
+ENTITY_EXTRACTION_TEMPLATE = """\
+You extract every named entity or notable attribute mentioned in the text as a flat list of \
+(type, value) pairs. Choose short, lowercase, snake_case labels for "type" based on what the \
+value represents (e.g. "person_name", "date", "email"). If the text mentions multiple values of \
+the same kind, emit one entity per value -- do not merge them.
+
+# Text
+{text}
+
+Respond with ONLY a JSON array of objects, each with a "type" key and a "value" key.
+Do not include markdown fences or commentary."""
+
 
 def build_t2d_prompt(text: str, schema: dict[str, Any], *, template: str = T2D_TEMPLATE) -> str:
     return template.format(schema=json.dumps(schema, ensure_ascii=False, indent=2), text=text)
@@ -99,3 +111,32 @@ def build_d2t_prompt(
 def build_infer_prompt(texts: list[str], *, template: str = INFER_TEMPLATE) -> str:
     joined = "\n\n".join(f"[{i + 1}] {text}" for i, text in enumerate(texts))
     return template.format(texts=joined)
+
+
+def build_entity_extraction_prompt(text: str, *, template: str = ENTITY_EXTRACTION_TEMPLATE) -> str:
+    return template.format(text=text)
+
+
+ENTITY_TYPE_MERGE_TEMPLATE = """\
+You are given entity types observed across a text corpus, each with a few example values. Some \
+types are synonyms or near-duplicates of each other (e.g. "name" and "full_name" both referring \
+to a person's name). Group synonymous types together and assign each group a single canonical, \
+lowercase, snake_case type name.
+
+# Observed types
+{types}
+
+Respond with ONLY a JSON object mapping every observed type listed above (as its key, unchanged) \
+to its canonical type name (as its value). Do not include markdown fences or commentary."""
+
+
+def build_entity_type_merge_prompt(
+    type_examples: dict[str, list[str]],
+    *,
+    template: str = ENTITY_TYPE_MERGE_TEMPLATE,
+) -> str:
+    listing = "\n".join(
+        f"- {type_}: {', '.join(json.dumps(value, ensure_ascii=False) for value in values)}"
+        for type_, values in type_examples.items()
+    )
+    return template.format(types=listing)

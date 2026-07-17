@@ -109,13 +109,16 @@ dtxt.render(obj, schema, style="casual, upbeat")  # overrides it for this call
 
 ## Status
 
-Released as [`dtxt` `0.1.0`](https://pypi.org/project/dtxt/0.1.0/) on PyPI.
+Released as [`dtxt` `0.3.0`](https://pypi.org/project/dtxt/0.3.0/) on PyPI.
 M1-M5 of the milestone plan are implemented: `Schema`, `parse` /
 `parse_many` (asyncio-parallel + bounded concurrency for API backends),
 `render` (with schema-level and per-call style control), `infer_schema`
 (sampling + merge, `min_coverage`), `check_roundtrip`, `configure`, a mock
-backend for testing, and the Anthropic / OpenAI / llama.cpp backends. See
-`CHANGELOG.md` for release notes and `CLAUDE.md` for what's next.
+backend for testing, and the Anthropic / OpenAI / llama.cpp backends.
+`dtxt.entities` (`FlatEntityExtractor`, `EntityTypeNormalizer`) is a new,
+not-yet-wired-in building block toward a flat-entity-based redesign of
+`infer_schema`. See `CHANGELOG.md` for release notes and `CLAUDE.md` for
+what's next.
 
 ## Development
 

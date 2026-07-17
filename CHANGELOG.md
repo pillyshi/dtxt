@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0] - 2026-07-17
+
+### Added
+
+- `dtxt.entities`: a flat-entity building block for schema inference,
+  usable ahead of a full `infer_schema` integration.
+  - `Entity`: a `(type, value)` pair.
+  - `FlatEntityExtractor`: extracts a flat entity list from a single text
+    via a backend (repeated types are kept, not deduplicated -- that
+    repetition is itself an array-field signal).
+  - `EntityTypeNormalizer`: reconciles entity types observed across a
+    corpus into canonical names. `fit()` merges synonymous types (e.g.
+    "name"/"full_name") into `self.mapping` via one backend call, seeded
+    with a few example values per type; `transform()` applies the fitted
+    mapping without touching the backend, falling back to a rule-based
+    (lowercase/snake_case) normalization for types not seen during `fit`.
+    `save()`/`load()` persist the mapping as JSON for reuse without
+    re-fitting.
+
 ## [0.2.0] - 2026-07-16
 
 ### Added
