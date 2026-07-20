@@ -80,6 +80,10 @@ class LlamaCpp:
     in a model-specific chat template by passing ``prompt_template`` (a
     ``str.format`` template with a single ``{prompt}`` placeholder).
 
+    ``temperature`` is a fixed, per-instance sampling parameter forwarded
+    to ``create_chat_completion`` on every call; leave it ``None`` to use
+    llama.cpp's own default.
+
     In-process inference assumes a single stream: batches are processed
     sequentially (no ``agenerate``), so llama.cpp's prompt cache is reused
     across calls sharing a prefix instead of contending for one model
@@ -96,6 +100,7 @@ class LlamaCpp:
         n_gpu_layers: int = 0,
         flash_attn: bool = False,
         max_tokens: int = 1024,
+        temperature: float | None = None,
         max_grammar_depth: int = DEFAULT_MAX_GRAMMAR_DEPTH,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
         llama: Any | None = None,
@@ -119,6 +124,7 @@ class LlamaCpp:
         self._n_gpu_layers = n_gpu_layers
         self._flash_attn = flash_attn
         self._max_tokens = max_tokens
+        self._temperature = temperature
         self._max_grammar_depth = max_grammar_depth
         self._prompt_template = prompt_template
         self._llama_kwargs = llama_kwargs
@@ -151,6 +157,8 @@ class LlamaCpp:
             "messages": [{"role": "user", "content": self._prompt_template.format(prompt=prompt)}],
             "max_tokens": self._max_tokens,
         }
+        if self._temperature is not None:
+            kwargs["temperature"] = self._temperature
         if schema is not None:
             safe_schema = grammar_safe_schema(schema, max_depth=self._max_grammar_depth)
             kwargs["response_format"] = {"type": "json_object", "schema": safe_schema}

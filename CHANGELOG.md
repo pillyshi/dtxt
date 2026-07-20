@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0] - 2026-07-21
+
+### Added
+
+- `temperature` constructor parameter on `Anthropic`, `OpenAI`, and
+  `LlamaCpp` backends: a fixed, per-instance sampling temperature
+  forwarded to the underlying API/`create_chat_completion` call on every
+  `generate`/`agenerate`. Left `None` (default), the provider's own
+  default is used and the parameter is omitted from the request.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added

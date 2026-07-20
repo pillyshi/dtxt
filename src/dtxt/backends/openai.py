@@ -24,11 +24,18 @@ def _import_openai() -> Any:
     return openai
 
 
-def _build_request_kwargs(model: str, prompt: str, schema: dict[str, Any] | None) -> dict[str, Any]:
+def _build_request_kwargs(
+    model: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    temperature: float | None,
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     if schema is not None:
         kwargs["response_format"] = {
             "type": "json_schema",
@@ -59,11 +66,13 @@ class OpenAI:
         model: str,
         *,
         api_key: str | None = None,
+        temperature: float | None = None,
         client: Any | None = None,
         async_client: Any | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
+        self._temperature = temperature
         self._client = client
         self._async_client = async_client
 
@@ -86,11 +95,11 @@ class OpenAI:
         return {JSON_MODE}
 
     def generate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
-        kwargs = _build_request_kwargs(self._model, prompt, schema)
+        kwargs = _build_request_kwargs(self._model, prompt, schema, self._temperature)
         response = self._get_client().chat.completions.create(**kwargs)
         return _extract_result(response)
 
     async def agenerate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
-        kwargs = _build_request_kwargs(self._model, prompt, schema)
+        kwargs = _build_request_kwargs(self._model, prompt, schema, self._temperature)
         response = await self._get_async_client().chat.completions.create(**kwargs)
         return _extract_result(response)

@@ -27,13 +27,19 @@ def _import_anthropic() -> Any:
 
 
 def _build_request_kwargs(
-    model: str, prompt: str, schema: dict[str, Any] | None, max_tokens: int
+    model: str,
+    prompt: str,
+    schema: dict[str, Any] | None,
+    max_tokens: int,
+    temperature: float | None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
     }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     if schema is not None:
         kwargs["tools"] = [
             {
@@ -76,12 +82,14 @@ class Anthropic:
         *,
         api_key: str | None = None,
         max_tokens: int = 4096,
+        temperature: float | None = None,
         client: Any | None = None,
         async_client: Any | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._max_tokens = max_tokens
+        self._temperature = temperature
         self._client = client
         self._async_client = async_client
 
@@ -104,11 +112,15 @@ class Anthropic:
         return {TOOL_CALLING}
 
     def generate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
-        kwargs = _build_request_kwargs(self._model, prompt, schema, self._max_tokens)
+        kwargs = _build_request_kwargs(
+            self._model, prompt, schema, self._max_tokens, self._temperature
+        )
         message = self._get_client().messages.create(**kwargs)
         return _extract_result(message, schema)
 
     async def agenerate(self, prompt: str, *, schema: dict[str, Any] | None = None) -> str:
-        kwargs = _build_request_kwargs(self._model, prompt, schema, self._max_tokens)
+        kwargs = _build_request_kwargs(
+            self._model, prompt, schema, self._max_tokens, self._temperature
+        )
         message = await self._get_async_client().messages.create(**kwargs)
         return _extract_result(message, schema)

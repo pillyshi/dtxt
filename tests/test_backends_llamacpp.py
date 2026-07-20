@@ -41,6 +41,24 @@ def test_generate_with_schema_sets_grammar_response_format() -> None:
     assert "pattern" not in response_format["schema"]["properties"]["name"]
 
 
+def test_temperature_defaults_to_omitted() -> None:
+    llama = _FakeLlama("hello")
+    backend = LlamaCpp("model.gguf", llama=llama)
+
+    backend.generate("prompt")
+
+    assert "temperature" not in llama.calls[0]
+
+
+def test_temperature_is_forwarded_to_create_chat_completion() -> None:
+    llama = _FakeLlama("hello")
+    backend = LlamaCpp("model.gguf", llama=llama, temperature=0.7)
+
+    backend.generate("prompt")
+
+    assert llama.calls[0]["temperature"] == 0.7
+
+
 def test_prompt_template_override_wraps_prompt() -> None:
     llama = _FakeLlama("ok")
     backend = LlamaCpp("model.gguf", llama=llama, prompt_template="<s>[INST] {prompt} [/INST]")

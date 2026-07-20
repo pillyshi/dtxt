@@ -67,6 +67,24 @@ def test_generate_with_schema_sets_response_format() -> None:
     assert response_format["json_schema"]["schema"] == schema
 
 
+def test_temperature_defaults_to_omitted() -> None:
+    client = _FakeClient(_response("hello"))
+    backend = OpenAI("gpt-x", client=client)
+
+    backend.generate("prompt")
+
+    assert "temperature" not in client.chat.completions.calls[0]
+
+
+def test_temperature_is_forwarded_to_chat_completions_create() -> None:
+    client = _FakeClient(_response("hello"))
+    backend = OpenAI("gpt-x", client=client, temperature=0.7)
+
+    backend.generate("prompt")
+
+    assert client.chat.completions.calls[0]["temperature"] == 0.7
+
+
 def test_missing_content_raises() -> None:
     client = _FakeClient(_response(None))
     backend = OpenAI("gpt-x", client=client)

@@ -71,6 +71,24 @@ def test_generate_with_schema_forces_tool_use() -> None:
     assert call["tools"][0]["input_schema"] == schema
 
 
+def test_temperature_defaults_to_omitted() -> None:
+    client = _FakeClient(_text_message("hello"))
+    backend = Anthropic("claude-x", client=client)
+
+    backend.generate("prompt")
+
+    assert "temperature" not in client.messages.calls[0]
+
+
+def test_temperature_is_forwarded_to_messages_create() -> None:
+    client = _FakeClient(_text_message("hello"))
+    backend = Anthropic("claude-x", client=client, temperature=0.7)
+
+    backend.generate("prompt")
+
+    assert client.messages.calls[0]["temperature"] == 0.7
+
+
 def test_missing_tool_use_block_raises() -> None:
     client = _FakeClient(_text_message("oops, no tool call"))
     backend = Anthropic("claude-x", client=client)
