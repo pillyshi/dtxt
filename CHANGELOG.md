@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-07-21
+
+### Added
+
+- `dtxt.entities.EntityRenderer`: renders a flat entity list back into
+  text via a backend, the reverse of `FlatEntityExtractor`. Not
+  schema-aware (no `x-dtxt-*` description/examples/style guidance like
+  `dtxt.d2t.render` gets), so it's meant for round-trip checks on entity
+  extraction/normalization quality rather than as a general D2T
+  replacement.
+
 ## [0.4.0] - 2026-07-21
 
 ### Added

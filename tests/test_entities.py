@@ -8,6 +8,8 @@ from dtxt.entities import (
     Entity,
     EntityExtractionError,
     EntityNormalizationError,
+    EntityRenderer,
+    EntityRenderError,
     EntityTypeNormalizer,
     FlatEntityExtractor,
 )
@@ -138,6 +140,42 @@ def test_transform_does_not_call_backend() -> None:
     normalizer.transform([[Entity(type="name", value="Alice")]])
 
     assert backend.calls == []
+
+
+def test_render_returns_backend_text() -> None:
+    backend = MockBackend(responses=["Alice met Bob on 2026-07-17."])
+    renderer = EntityRenderer(backend)
+
+    text = renderer.render(
+        [
+            Entity(type="person_name", value="Alice"),
+            Entity(type="person_name", value="Bob"),
+            Entity(type="date", value="2026-07-17"),
+        ]
+    )
+
+    assert text == "Alice met Bob on 2026-07-17."
+
+
+def test_render_passes_every_entity_in_prompt() -> None:
+    backend = MockBackend(responses=["some text"])
+    renderer = EntityRenderer(backend)
+
+    renderer.render([Entity(type="city", value="Kyoto"), Entity(type="date", value="2026-07-17")])
+
+    prompt, _ = backend.calls[0]
+    assert "city" in prompt
+    assert "Kyoto" in prompt
+    assert "date" in prompt
+    assert "2026-07-17" in prompt
+
+
+def test_render_raises_on_empty_backend_output() -> None:
+    backend = MockBackend(responses=["   "])
+    renderer = EntityRenderer(backend)
+
+    with pytest.raises(EntityRenderError):
+        renderer.render([Entity(type="city", value="Kyoto")])
 
 
 def test_save_and_load_round_trip(tmp_path: Path) -> None:

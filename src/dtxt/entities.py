@@ -5,6 +5,10 @@ first reduced to a flat list of ``(type, value)`` entities. The same type
 may repeat within one text (that repetition is itself a signal, e.g. of an
 array field). A later normalization pass reconciles entity types across a
 corpus before a schema is built from them.
+
+``EntityRenderer`` provides the reverse direction (entities -> text), useful
+for round-trip checks on extraction/normalization quality. It is not a
+general-purpose D2T replacement -- see ``dtxt.d2t.render`` for that.
 """
 
 from __future__ import annotations
@@ -17,7 +21,11 @@ from pydantic import BaseModel
 
 from ._util import extract_json
 from .backends.base import Backend
-from .prompts import build_entity_extraction_prompt, build_entity_type_merge_prompt
+from .prompts import (
+    build_entity_extraction_prompt,
+    build_entity_render_prompt,
+    build_entity_type_merge_prompt,
+)
 
 DEFAULT_MAX_EXAMPLES_PER_TYPE = 3
 
@@ -44,6 +52,10 @@ class EntityNormalizationError(Exception):
     """Raised when a backend fails to produce a usable type mapping."""
 
 
+class EntityRenderError(Exception):
+    """Raised when a backend fails to produce text from an entity list."""
+
+
 class FlatEntityExtractor:
     """Extracts a flat list of entities from a single text via a backend."""
 
@@ -67,6 +79,29 @@ class FlatEntityExtractor:
                 continue
             entities.append(Entity(type=str(item["type"]), value=str(item["value"])))
         return entities
+
+
+class EntityRenderer:
+    """Renders a flat list of entities back into text via a backend.
+
+    The reverse of :class:`FlatEntityExtractor`. Not schema-aware -- unlike
+    :func:`dtxt.d2t.render`, there is no ``Schema`` here to supply field
+    descriptions/examples/style, just the raw ``(type, value)`` pairs. This
+    makes it useful mainly as a round-trip check on entity extraction and
+    normalization quality (extract -> normalize -> render -> re-extract),
+    not as a general-purpose D2T replacement.
+    """
+
+    def __init__(self, backend: Backend) -> None:
+        self._backend = backend
+
+    def render(self, entities: list[Entity]) -> str:
+        """Render ``entities`` into a single piece of natural-language text."""
+        prompt = build_entity_render_prompt([(entity.type, entity.value) for entity in entities])
+        text = self._backend.generate(prompt)
+        if not text.strip():
+            raise EntityRenderError("backend returned empty text")
+        return text
 
 
 class EntityTypeNormalizer:

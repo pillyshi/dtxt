@@ -140,3 +140,23 @@ def build_entity_type_merge_prompt(
         for type_, values in type_examples.items()
     )
     return template.format(types=listing)
+
+
+ENTITY_RENDER_TEMPLATE = """\
+You write natural, fluent text that expresses every one of the following (type, value) entities. \
+Do not add entities that are not listed, and do not drop any of the listed ones.
+
+# Entities
+{entities}
+
+Write the text now. Do not include the entity list, labels, or commentary -- only the \
+resulting text."""
+
+
+def build_entity_render_prompt(
+    entities: list[tuple[str, str]],
+    *,
+    template: str = ENTITY_RENDER_TEMPLATE,
+) -> str:
+    listing = "\n".join(f"- {type_}: {value}" for type_, value in entities)
+    return template.format(entities=listing)
