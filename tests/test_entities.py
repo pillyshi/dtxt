@@ -61,6 +61,67 @@ def test_extract_raises_when_response_is_not_a_list() -> None:
         extractor.extract("some text")
 
 
+def test_extract_without_entity_schema_calls_backend_with_no_schema() -> None:
+    raw = json.dumps([{"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    extractor = FlatEntityExtractor(backend)
+
+    extractor.extract("Kyoto")
+
+    _, schema = backend.calls[0]
+    assert schema is None
+
+
+def test_extract_with_entity_schema_includes_allowed_types_in_prompt() -> None:
+    raw = json.dumps([{"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    extractor = FlatEntityExtractor(
+        backend, entity_schema={"type": "string", "enum": ["city", "date"]}
+    )
+
+    extractor.extract("Kyoto")
+
+    prompt, _ = backend.calls[0]
+    assert "city" in prompt
+    assert "date" in prompt
+
+
+def test_extract_with_entity_schema_passes_wrapped_output_schema_to_backend() -> None:
+    raw = json.dumps([{"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    entity_schema = {"type": "string", "enum": ["city", "date"]}
+    extractor = FlatEntityExtractor(backend, entity_schema=entity_schema)
+
+    extractor.extract("Kyoto")
+
+    _, schema = backend.calls[0]
+    assert schema == {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"type": entity_schema, "value": {"type": "string"}},
+            "required": ["type", "value"],
+        },
+    }
+
+
+def test_extract_with_entity_schema_drops_out_of_vocabulary_types() -> None:
+    raw = json.dumps(
+        [
+            {"type": "city", "value": "Kyoto"},
+            {"type": "country", "value": "Japan"},
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = FlatEntityExtractor(
+        backend, entity_schema={"type": "string", "enum": ["city", "date"]}
+    )
+
+    entities = extractor.extract("Kyoto, Japan")
+
+    assert entities == [Entity(type="city", value="Kyoto")]
+
+
 def test_fit_merges_synonymous_types_via_backend() -> None:
     backend = MockBackend(
         responses=[json.dumps({"name": "person_name", "full_name": "person_name"})]
@@ -104,6 +165,36 @@ def test_fit_raises_on_invalid_json() -> None:
 
     with pytest.raises(EntityNormalizationError):
         normalizer.fit([[Entity(type="name", value="Alice")]])
+
+
+def test_entity_schema_is_none_before_fit() -> None:
+    normalizer = EntityTypeNormalizer(MockBackend())
+
+    assert normalizer.entity_schema() is None
+
+
+def test_entity_schema_is_none_after_fit_on_empty_input() -> None:
+    normalizer = EntityTypeNormalizer(MockBackend())
+
+    normalizer.fit([])
+
+    assert normalizer.entity_schema() is None
+
+
+def test_entity_schema_returns_sorted_canonical_types_after_fit() -> None:
+    backend = MockBackend(
+        responses=[json.dumps({"name": "person_name", "full_name": "person_name", "date": "date"})]
+    )
+    normalizer = EntityTypeNormalizer(backend)
+
+    normalizer.fit(
+        [
+            [Entity(type="name", value="Alice"), Entity(type="date", value="2026-07-17")],
+            [Entity(type="full_name", value="Bob Smith")],
+        ]
+    )
+
+    assert normalizer.entity_schema() == {"type": "string", "enum": ["date", "person_name"]}
 
 
 def test_transform_applies_fitted_mapping() -> None:

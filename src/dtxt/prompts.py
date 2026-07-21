@@ -73,6 +73,21 @@ the same kind, emit one entity per value -- do not merge them.
 Respond with ONLY a JSON array of objects, each with a "type" key and a "value" key.
 Do not include markdown fences or commentary."""
 
+ENTITY_EXTRACTION_CONSTRAINED_TEMPLATE = """\
+You extract every named entity or notable attribute mentioned in the text as a flat list of \
+(type, value) pairs. Only use one of the following allowed types for "type" -- do not invent \
+new ones, and skip any entity that does not fit one of them. If the text mentions multiple \
+values of the same kind, emit one entity per value -- do not merge them.
+
+# Allowed types
+{allowed_types}
+
+# Text
+{text}
+
+Respond with ONLY a JSON array of objects, each with a "type" key and a "value" key.
+Do not include markdown fences or commentary."""
+
 
 def build_t2d_prompt(text: str, schema: dict[str, Any], *, template: str = T2D_TEMPLATE) -> str:
     return template.format(schema=json.dumps(schema, ensure_ascii=False, indent=2), text=text)
@@ -113,8 +128,18 @@ def build_infer_prompt(texts: list[str], *, template: str = INFER_TEMPLATE) -> s
     return template.format(texts=joined)
 
 
-def build_entity_extraction_prompt(text: str, *, template: str = ENTITY_EXTRACTION_TEMPLATE) -> str:
-    return template.format(text=text)
+def build_entity_extraction_prompt(
+    text: str,
+    *,
+    entity_schema: dict[str, Any] | None = None,
+    template: str | None = None,
+) -> str:
+    if entity_schema is not None:
+        allowed_types = "\n".join(f"- {t}" for t in entity_schema.get("enum", []))
+        return (template or ENTITY_EXTRACTION_CONSTRAINED_TEMPLATE).format(
+            text=text, allowed_types=allowed_types
+        )
+    return (template or ENTITY_EXTRACTION_TEMPLATE).format(text=text)
 
 
 ENTITY_TYPE_MERGE_TEMPLATE = """\

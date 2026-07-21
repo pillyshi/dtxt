@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0] - 2026-07-21
+
+### Added
+
+- `EntityTypeNormalizer.entity_schema()`: emits a JSON Schema fragment
+  (`{"type": "string", "enum": [...]}`) constraining an entity's `type` to
+  the canonical vocabulary learned by `fit`. Returns `None` before `fit`
+  has run (or ran on empty input).
+- `FlatEntityExtractor(backend, entity_schema=...)`: an optional
+  constructor param, typically fed `EntityTypeNormalizer.entity_schema()`'s
+  output, that constrains `extract()` to a known type vocabulary instead of
+  letting the backend invent labels freely. The prompt lists the allowed
+  types, the backend is called with a schema reflecting them (so a
+  `constrained_decoding` backend can enforce it at the grammar level), and
+  any entity whose type slips through outside the vocabulary is dropped.
+  Left `None` (default), `extract()`'s behavior is unchanged.
+
 ## [0.5.0] - 2026-07-21
 
 ### Added

@@ -109,7 +109,7 @@ dtxt.render(obj, schema, style="casual, upbeat")  # overrides it for this call
 
 ## Status
 
-Released as [`dtxt` `0.5.0`](https://pypi.org/project/dtxt/0.5.0/) on PyPI.
+Released as [`dtxt` `0.6.0`](https://pypi.org/project/dtxt/0.6.0/) on PyPI.
 M1-M5 of the milestone plan are implemented: `Schema`, `parse` /
 `parse_many` (asyncio-parallel + bounded concurrency for API backends),
 `render` (with schema-level and per-call style control), `infer_schema`

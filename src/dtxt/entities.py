@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -57,15 +58,39 @@ class EntityRenderError(Exception):
 
 
 class FlatEntityExtractor:
-    """Extracts a flat list of entities from a single text via a backend."""
+    """Extracts a flat list of entities from a single text via a backend.
 
-    def __init__(self, backend: Backend) -> None:
+    By default, the backend is free to invent its own ``type`` labels (the
+    right mode for first-pass corpus discovery ahead of
+    :class:`EntityTypeNormalizer`). Passing ``entity_schema`` -- typically
+    :meth:`EntityTypeNormalizer.entity_schema`'s output -- constrains
+    extraction to a known type vocabulary instead: the prompt lists the
+    allowed types, the backend is asked to generate against a schema
+    reflecting them (letting a ``constrained_decoding`` backend enforce it
+    at the grammar level), and any entity whose type slips through outside
+    the vocabulary is dropped as a defensive net.
+    """
+
+    def __init__(self, backend: Backend, *, entity_schema: dict[str, Any] | None = None) -> None:
         self._backend = backend
+        self._entity_schema = entity_schema
 
     def extract(self, text: str) -> list[Entity]:
         """Extract entities mentioned in ``text``."""
-        prompt = build_entity_extraction_prompt(text)
-        raw = self._backend.generate(prompt)
+        prompt = build_entity_extraction_prompt(text, entity_schema=self._entity_schema)
+        output_schema = (
+            {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"type": self._entity_schema, "value": {"type": "string"}},
+                    "required": ["type", "value"],
+                },
+            }
+            if self._entity_schema is not None
+            else None
+        )
+        raw = self._backend.generate(prompt, schema=output_schema)
         try:
             data = extract_json(raw)
         except json.JSONDecodeError as exc:
@@ -73,11 +98,17 @@ class FlatEntityExtractor:
         if not isinstance(data, list):
             raise EntityExtractionError("backend did not return a JSON array of entities")
 
+        allowed_types = (
+            set(self._entity_schema["enum"]) if self._entity_schema is not None else None
+        )
         entities = []
         for item in data:
             if not isinstance(item, dict) or "type" not in item or "value" not in item:
                 continue
-            entities.append(Entity(type=str(item["type"]), value=str(item["value"])))
+            entity_type = str(item["type"])
+            if allowed_types is not None and entity_type not in allowed_types:
+                continue
+            entities.append(Entity(type=entity_type, value=str(item["value"])))
         return entities
 
 
@@ -146,6 +177,16 @@ class EntityTypeNormalizer:
             for raw_type, canonical in data.items()
             if isinstance(raw_type, str) and isinstance(canonical, str)
         }
+
+    def entity_schema(self) -> dict[str, Any] | None:
+        """A JSON Schema fragment constraining an entity's ``type`` to the
+        canonical vocabulary learned by ``fit``, for reuse with
+        :class:`FlatEntityExtractor`'s ``entity_schema`` param. ``None`` if
+        ``fit`` hasn't run yet (or ran on empty input).
+        """
+        if not self.mapping:
+            return None
+        return {"type": "string", "enum": sorted(set(self.mapping.values()))}
 
     def transform(self, entity_lists: list[list[Entity]]) -> list[list[Entity]]:
         """Apply ``self.mapping`` to ``entity_lists``, without calling the backend.
