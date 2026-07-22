@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-07-22
+
+### Added
+
+- `dtxt.entities.NestedEntityExtractor`: like `FlatEntityExtractor`, but an
+  entity may represent one instance of a repeating structured record (e.g.
+  a receipt's line items) by carrying `children` -- that instance's own
+  flat entities -- instead of a scalar `value`. Repeated top-level entities
+  of the same group `type` read as "array of that group," the same
+  repetition-as-array signal `FlatEntityExtractor` already relies on for
+  scalar arrays. Nesting is capped at one level: children never carry their
+  own `children`, both by the (non-recursive) output JSON Schema handed to
+  the backend and defensively when parsing its response. Unconstrained
+  only for now -- no `entity_schema` vocabulary constraint yet; that's
+  planned as a follow-up once `EntityTypeNormalizer` can learn a two-tier
+  group/child vocabulary.
+- `Entity.children`: optional field (`list[Entity] | None`, default
+  `None`) added to the existing `Entity` model to support the above.
+  `Entity.value` is now `str | None` (default `None`) to allow a group
+  entity to omit it. Fully backward compatible -- `FlatEntityExtractor`
+  and `EntityTypeNormalizer` are unchanged.
+- `EntityRenderer.render()` now also handles group entities (rendering a
+  group's `children` alongside it), so it still serves as a round-trip
+  check (extract -> render -> re-extract) on `NestedEntityExtractor`'s
+  output, not just `FlatEntityExtractor`'s.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added

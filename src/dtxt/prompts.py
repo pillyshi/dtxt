@@ -142,6 +142,55 @@ def build_entity_extraction_prompt(
     return (template or ENTITY_EXTRACTION_TEMPLATE).format(text=text)
 
 
+NESTED_ENTITY_EXTRACTION_TEMPLATE = """\
+You extract every named entity or notable attribute mentioned in the text as a list of \
+(type, value) pairs, the same as flat entity extraction. Choose short, lowercase, snake_case \
+labels for "type" based on what the value represents (e.g. "person_name", "date", "email"). If \
+the text mentions multiple values of the same kind, emit one entity per value -- do not merge \
+them.
+
+Additionally, if the text contains a REPEATING STRUCTURED RECORD -- multiple instances of the \
+same kind of thing, each with its own set of sub-fields (e.g. several line items, each with a \
+name, quantity, and price) -- emit ONE entity per instance whose "type" names the record kind \
+and whose "children" is a list of that instance's own (type, value) entities, instead of a \
+"value". Do not nest "children" more than one level deep -- an entity's children must themselves \
+be plain (type, value) entities, never another group.
+
+# Example
+
+Text: "Order #42: 3x Widget at $9.99 each, 1x Gadget at $19.99."
+
+Output:
+[
+  {{"type": "order_id", "value": "42"}},
+  {{"type": "line_item", "children": [
+    {{"type": "item_name", "value": "Widget"}},
+    {{"type": "quantity", "value": "3"}},
+    {{"type": "unit_price", "value": "9.99"}}
+  ]}},
+  {{"type": "line_item", "children": [
+    {{"type": "item_name", "value": "Gadget"}},
+    {{"type": "quantity", "value": "1"}},
+    {{"type": "unit_price", "value": "19.99"}}
+  ]}}
+]
+
+# Text
+{text}
+
+Respond with ONLY a JSON array of objects like the example above, each with a "type" key and \
+either a "value" key (for a plain entity) or a "children" key (for a repeating structured \
+record instance). Do not include markdown fences or commentary."""
+
+
+def build_nested_entity_extraction_prompt(
+    text: str,
+    *,
+    template: str = NESTED_ENTITY_EXTRACTION_TEMPLATE,
+) -> str:
+    return template.format(text=text)
+
+
 ENTITY_TYPE_MERGE_TEMPLATE = """\
 You are given entity types observed across a text corpus, each with a few example values. Some \
 types are synonyms or near-duplicates of each other (e.g. "name" and "full_name" both referring \
@@ -168,8 +217,11 @@ def build_entity_type_merge_prompt(
 
 
 ENTITY_RENDER_TEMPLATE = """\
-You write natural, fluent text that expresses every one of the following (type, value) entities. \
-Do not add entities that are not listed, and do not drop any of the listed ones.
+You write natural, fluent text that expresses every one of the following entities. Each entity \
+is either a plain (type, value) pair, or a group -- a type representing one instance of a \
+repeating structured record, together with a nested list of its own (type, value) sub-entities. \
+Do not add entities that are not listed, and do not drop any of the listed ones (including a \
+group's sub-entities).
 
 # Entities
 {entities}
@@ -179,9 +231,15 @@ resulting text."""
 
 
 def build_entity_render_prompt(
-    entities: list[tuple[str, str]],
+    entities: list[tuple[str, str | list[tuple[str, str]]]],
     *,
     template: str = ENTITY_RENDER_TEMPLATE,
 ) -> str:
-    listing = "\n".join(f"- {type_}: {value}" for type_, value in entities)
-    return template.format(entities=listing)
+    lines = []
+    for type_, value in entities:
+        if isinstance(value, list):
+            lines.append(f"- {type_}:")
+            lines.extend(f"    - {child_type}: {child_value}" for child_type, child_value in value)
+        else:
+            lines.append(f"- {type_}: {value}")
+    return template.format(entities="\n".join(lines))

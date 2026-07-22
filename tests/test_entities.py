@@ -12,6 +12,7 @@ from dtxt.entities import (
     EntityRenderError,
     EntityTypeNormalizer,
     FlatEntityExtractor,
+    NestedEntityExtractor,
 )
 
 
@@ -120,6 +121,186 @@ def test_extract_with_entity_schema_drops_out_of_vocabulary_types() -> None:
     entities = extractor.extract("Kyoto, Japan")
 
     assert entities == [Entity(type="city", value="Kyoto")]
+
+
+def test_nested_extract_returns_flat_entities_when_no_groups() -> None:
+    raw = json.dumps([{"type": "city", "value": "Kyoto"}, {"type": "date", "value": "2026-07-17"}])
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("Kyoto, 2026-07-17")
+
+    assert entities == [
+        Entity(type="city", value="Kyoto"),
+        Entity(type="date", value="2026-07-17"),
+    ]
+
+
+def test_nested_extract_returns_group_entity_with_children() -> None:
+    raw = json.dumps(
+        [
+            {"type": "order_id", "value": "42"},
+            {
+                "type": "line_item",
+                "children": [
+                    {"type": "item_name", "value": "Widget"},
+                    {"type": "quantity", "value": "3"},
+                ],
+            },
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("Order #42: 3x Widget.")
+
+    assert entities == [
+        Entity(type="order_id", value="42"),
+        Entity(
+            type="line_item",
+            children=[
+                Entity(type="item_name", value="Widget"),
+                Entity(type="quantity", value="3"),
+            ],
+        ),
+    ]
+
+
+def test_nested_extract_repeated_group_type_signals_array() -> None:
+    raw = json.dumps(
+        [
+            {"type": "line_item", "children": [{"type": "item_name", "value": "Widget"}]},
+            {"type": "line_item", "children": [{"type": "item_name", "value": "Gadget"}]},
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("3x Widget, 1x Gadget.")
+
+    assert [entity.type for entity in entities] == ["line_item", "line_item"]
+
+
+def test_nested_extract_skips_malformed_children() -> None:
+    raw = json.dumps(
+        [
+            {
+                "type": "line_item",
+                "children": [
+                    {"type": "item_name", "value": "Widget"},
+                    {"type": "quantity"},
+                    {"value": "no type"},
+                ],
+            }
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("3x Widget.")
+
+    assert entities == [
+        Entity(type="line_item", children=[Entity(type="item_name", value="Widget")])
+    ]
+
+
+def test_nested_extract_drops_nested_children_beyond_one_level() -> None:
+    raw = json.dumps(
+        [
+            {
+                "type": "line_item",
+                "children": [
+                    {
+                        "type": "sub_item",
+                        "value": "Widget",
+                        "children": [{"type": "nested", "value": "too deep"}],
+                    }
+                ],
+            }
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("3x Widget.")
+
+    assert entities == [
+        Entity(type="line_item", children=[Entity(type="sub_item", value="Widget")])
+    ]
+
+
+def test_nested_extract_skips_items_without_type() -> None:
+    raw = json.dumps([{"value": "no type"}, {"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("Kyoto")
+
+    assert entities == [Entity(type="city", value="Kyoto")]
+
+
+def test_nested_extract_skips_items_with_neither_value_nor_children() -> None:
+    raw = json.dumps([{"type": "mystery"}, {"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    entities = extractor.extract("Kyoto")
+
+    assert entities == [Entity(type="city", value="Kyoto")]
+
+
+def test_nested_extract_raises_on_invalid_json() -> None:
+    backend = MockBackend(responses=["not json"])
+    extractor = NestedEntityExtractor(backend)
+
+    with pytest.raises(EntityExtractionError):
+        extractor.extract("some text")
+
+
+def test_nested_extract_raises_when_response_is_not_a_list() -> None:
+    backend = MockBackend(responses=[json.dumps({"type": "city", "value": "Kyoto"})])
+    extractor = NestedEntityExtractor(backend)
+
+    with pytest.raises(EntityExtractionError):
+        extractor.extract("some text")
+
+
+def test_nested_extract_passes_non_recursive_output_schema_to_backend() -> None:
+    raw = json.dumps([{"type": "city", "value": "Kyoto"}])
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend)
+
+    extractor.extract("Kyoto")
+
+    _, schema = backend.calls[0]
+    assert schema is not None
+    child_schema = schema["items"]["properties"]["children"]["items"]
+    assert "children" not in child_schema["properties"]
+
+
+def test_nested_extract_render_re_extract_round_trip() -> None:
+    extracted_raw = json.dumps(
+        [
+            {"type": "order_id", "value": "42"},
+            {
+                "type": "line_item",
+                "children": [
+                    {"type": "item_name", "value": "Widget"},
+                    {"type": "quantity", "value": "3"},
+                ],
+            },
+        ]
+    )
+    extractor = NestedEntityExtractor(MockBackend(responses=[extracted_raw]))
+    entities = extractor.extract("Order #42: 3x Widget.")
+
+    renderer = EntityRenderer(MockBackend(responses=["Order #42: 3x Widget."]))
+    rendered_text = renderer.render(entities)
+
+    re_extractor = NestedEntityExtractor(MockBackend(responses=[extracted_raw]))
+    re_entities = re_extractor.extract(rendered_text)
+
+    assert re_entities == entities
 
 
 def test_fit_merges_synonymous_types_via_backend() -> None:
@@ -259,6 +440,33 @@ def test_render_passes_every_entity_in_prompt() -> None:
     assert "Kyoto" in prompt
     assert "date" in prompt
     assert "2026-07-17" in prompt
+
+
+def test_render_passes_group_entity_children_in_prompt() -> None:
+    backend = MockBackend(responses=["some text"])
+    renderer = EntityRenderer(backend)
+
+    renderer.render(
+        [
+            Entity(type="order_id", value="42"),
+            Entity(
+                type="line_item",
+                children=[
+                    Entity(type="item_name", value="Widget"),
+                    Entity(type="quantity", value="3"),
+                ],
+            ),
+        ]
+    )
+
+    prompt, _ = backend.calls[0]
+    assert "order_id" in prompt
+    assert "42" in prompt
+    assert "line_item" in prompt
+    assert "item_name" in prompt
+    assert "Widget" in prompt
+    assert "quantity" in prompt
+    assert "3" in prompt
 
 
 def test_render_raises_on_empty_backend_output() -> None:

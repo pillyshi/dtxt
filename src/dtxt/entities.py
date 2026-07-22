@@ -1,10 +1,18 @@
-"""Flat entity extraction: a building block for schema inference.
+"""Flat and nested entity extraction: a building block for schema inference.
 
 Rather than asking a backend to invent a JSON Schema directly, texts are
 first reduced to a flat list of ``(type, value)`` entities. The same type
 may repeat within one text (that repetition is itself a signal, e.g. of an
 array field). A later normalization pass reconciles entity types across a
 corpus before a schema is built from them.
+
+``NestedEntityExtractor`` extends this one level: an entity may carry
+``children`` (its own flat entities) instead of a scalar ``value``, for
+repeating structured records (e.g. a receipt's line items) that a flat
+``(type, value)`` pair cannot express -- repetition of the same group
+``type`` at the top level then reads as "array of that group," the same
+repetition signal used for scalar arrays. Nesting is capped at one level:
+children never carry their own ``children``.
 
 ``EntityRenderer`` provides the reverse direction (entities -> text), useful
 for round-trip checks on extraction/normalization quality. It is not a
@@ -26,11 +34,31 @@ from .prompts import (
     build_entity_extraction_prompt,
     build_entity_render_prompt,
     build_entity_type_merge_prompt,
+    build_nested_entity_extraction_prompt,
 )
 
 DEFAULT_MAX_EXAMPLES_PER_TYPE = 3
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+_NESTED_ENTITY_CHILD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"type": {"type": "string"}, "value": {"type": "string"}},
+    "required": ["type", "value"],
+}
+
+_NESTED_ENTITY_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string"},
+            "value": {"type": "string"},
+            "children": {"type": "array", "items": _NESTED_ENTITY_CHILD_SCHEMA},
+        },
+        "required": ["type"],
+    },
+}
 
 
 def _normalize_type_string(raw: str) -> str:
@@ -39,10 +67,17 @@ def _normalize_type_string(raw: str) -> str:
 
 
 class Entity(BaseModel):
-    """A single ``(type, value)`` pair extracted from text."""
+    """A single entity extracted from text.
+
+    Either a leaf -- ``value`` set, ``children`` ``None`` -- or a group
+    representing one instance of a repeating structured record -- ``value``
+    ``None``, ``children`` set to that instance's own leaf entities. Groups
+    are not recursive: a child never has its own ``children``.
+    """
 
     type: str
-    value: str
+    value: str | None = None
+    children: list[Entity] | None = None
 
 
 class EntityExtractionError(Exception):
@@ -112,13 +147,78 @@ class FlatEntityExtractor:
         return entities
 
 
-class EntityRenderer:
-    """Renders a flat list of entities back into text via a backend.
+class NestedEntityExtractor:
+    """Extracts entities from a single text via a backend, one level deep.
 
-    The reverse of :class:`FlatEntityExtractor`. Not schema-aware -- unlike
-    :func:`dtxt.d2t.render`, there is no ``Schema`` here to supply field
-    descriptions/examples/style, just the raw ``(type, value)`` pairs. This
-    makes it useful mainly as a round-trip check on entity extraction and
+    Like :class:`FlatEntityExtractor`, but an entity may represent one
+    instance of a repeating structured record (e.g. a receipt's line
+    items) by carrying ``children`` -- that instance's own flat entities
+    -- instead of a scalar ``value``. Repeated top-level entities of the
+    same group ``type`` then read as "array of that group," the same
+    repetition-as-array-signal :class:`FlatEntityExtractor` relies on for
+    scalar arrays.
+
+    Unconstrained only: unlike :class:`FlatEntityExtractor`, there is no
+    ``entity_schema`` vocabulary constraint yet (planned as a follow-up,
+    once :class:`EntityTypeNormalizer` can learn a two-tier group/child
+    vocabulary). The backend is always free to invent its own labels.
+
+    Nesting is capped at one level as a defensive measure: any ``children``
+    that itself declares nested ``children`` has that nesting dropped,
+    keeping only its own ``type``/``value``.
+    """
+
+    def __init__(self, backend: Backend) -> None:
+        self._backend = backend
+
+    def extract(self, text: str) -> list[Entity]:
+        """Extract entities mentioned in ``text``, including any groups."""
+        prompt = build_nested_entity_extraction_prompt(text)
+        raw = self._backend.generate(prompt, schema=_NESTED_ENTITY_OUTPUT_SCHEMA)
+        try:
+            data = extract_json(raw)
+        except json.JSONDecodeError as exc:
+            raise EntityExtractionError(f"backend did not return valid JSON: {exc}") from exc
+        if not isinstance(data, list):
+            raise EntityExtractionError("backend did not return a JSON array of entities")
+
+        entities = []
+        for item in data:
+            entity = _parse_top_level_entity(item)
+            if entity is not None:
+                entities.append(entity)
+        return entities
+
+
+def _parse_top_level_entity(item: Any) -> Entity | None:
+    if not isinstance(item, dict) or "type" not in item:
+        return None
+    entity_type = str(item["type"])
+    children_raw = item.get("children")
+    if isinstance(children_raw, list):
+        return Entity(type=entity_type, children=_parse_children(children_raw))
+    if "value" in item:
+        return Entity(type=entity_type, value=str(item["value"]))
+    return None
+
+
+def _parse_children(children_raw: list[Any]) -> list[Entity]:
+    children = []
+    for child in children_raw:
+        if not isinstance(child, dict) or "type" not in child or "value" not in child:
+            continue
+        children.append(Entity(type=str(child["type"]), value=str(child["value"])))
+    return children
+
+
+class EntityRenderer:
+    """Renders a list of entities back into text via a backend.
+
+    The reverse of :class:`FlatEntityExtractor` and :class:`NestedEntityExtractor`.
+    Not schema-aware -- unlike :func:`dtxt.d2t.render`, there is no
+    ``Schema`` here to supply field descriptions/examples/style, just the
+    raw entities (including any group's ``children``). This makes it
+    useful mainly as a round-trip check on entity extraction and
     normalization quality (extract -> normalize -> render -> re-extract),
     not as a general-purpose D2T replacement.
     """
@@ -128,11 +228,17 @@ class EntityRenderer:
 
     def render(self, entities: list[Entity]) -> str:
         """Render ``entities`` into a single piece of natural-language text."""
-        prompt = build_entity_render_prompt([(entity.type, entity.value) for entity in entities])
+        prompt = build_entity_render_prompt([_render_item(entity) for entity in entities])
         text = self._backend.generate(prompt)
         if not text.strip():
             raise EntityRenderError("backend returned empty text")
         return text
+
+
+def _render_item(entity: Entity) -> tuple[str, str | list[tuple[str, str]]]:
+    if entity.children is not None:
+        return (entity.type, [(child.type, child.value or "") for child in entity.children])
+    return (entity.type, entity.value or "")
 
 
 class EntityTypeNormalizer:
@@ -156,7 +262,11 @@ class EntityTypeNormalizer:
             for entity in entities:
                 normalized = _normalize_type_string(entity.type)
                 values = examples.setdefault(normalized, [])
-                if len(values) < DEFAULT_MAX_EXAMPLES_PER_TYPE and entity.value not in values:
+                if (
+                    entity.value is not None
+                    and len(values) < DEFAULT_MAX_EXAMPLES_PER_TYPE
+                    and entity.value not in values
+                ):
                     values.append(entity.value)
 
         if not examples:
