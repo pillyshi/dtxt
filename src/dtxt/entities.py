@@ -1,4 +1,4 @@
-"""Flat and nested entity extraction: a building block for schema inference.
+"""Schema-free structured extraction: a building block for schema inference.
 
 Rather than asking a backend to invent a JSON Schema directly, texts are
 first reduced to a flat list of ``(type, value)`` entities. The same type
@@ -6,17 +6,32 @@ may repeat within one text (that repetition is itself a signal, e.g. of an
 array field). A later normalization pass reconciles entity types across a
 corpus before a schema is built from them.
 
-``NestedEntityExtractor`` extends this one level: an entity may carry
-``children`` (its own flat entities) instead of a scalar ``value``, for
-repeating structured records (e.g. a receipt's line items) that a flat
-``(type, value)`` pair cannot express -- repetition of the same group
-``type`` at the top level then reads as "array of that group," the same
-repetition signal used for scalar arrays. Nesting is capped at one level:
-children never carry their own ``children``.
+``NestedEntityExtractor`` extends this: an entity may carry ``children``
+(its own entities) instead of a scalar ``value``, for repeating structured
+records (e.g. a receipt's line items) that a flat ``(type, value)`` pair
+cannot express -- repetition of the same group ``type`` at a given level
+then reads as "array of that group," the same repetition signal used for
+scalar arrays. ``children`` may themselves carry ``children``, down to
+``max_depth`` levels below the top level (defaulting to one, matching the
+depth ``EntityTypeNormalizer``/``SchemaInferer`` are exercised at today);
+any nesting beyond that is dropped, both by the (bounded, non-infinitely-
+recursive) output JSON Schema handed to the backend and defensively when
+parsing its response.
+
+``EntityTypeNormalizer`` reconciles the free-form type labels a corpus of
+such extractions ends up with into a shared vocabulary, one level at a
+time: it normalizes a level's own types first, then pools every occurrence
+of a canonical group type's ``children`` -- across every entity list and
+every occurrence within it -- and recurses into that pool to normalize the
+next level down. Deciding whether a canonical type is ultimately a scalar
+or an object/array field is left to schema construction (``SchemaInferer``),
+which has the corpus-wide coverage numbers to make that call; this module
+only unifies names.
 
 ``EntityRenderer`` provides the reverse direction (entities -> text), useful
-for round-trip checks on extraction/normalization quality. It is not a
-general-purpose D2T replacement -- see ``dtxt.d2t.render`` for that.
+for round-trip checks on extraction/normalization quality. It only renders
+one level of ``children`` and is not a general-purpose D2T replacement --
+see ``StructuredEntityRenderer`` for that.
 """
 
 from __future__ import annotations
@@ -38,27 +53,25 @@ from .prompts import (
 )
 
 DEFAULT_MAX_EXAMPLES_PER_TYPE = 3
+DEFAULT_MAX_DEPTH = 1
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
-_NESTED_ENTITY_CHILD_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {"type": {"type": "string"}, "value": {"type": "string"}},
-    "required": ["type", "value"],
-}
 
-_NESTED_ENTITY_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "type": {"type": "string"},
-            "value": {"type": "string"},
-            "children": {"type": "array", "items": _NESTED_ENTITY_CHILD_SCHEMA},
-        },
-        "required": ["type"],
-    },
-}
+def _entity_item_schema(remaining_depth: int) -> dict[str, Any]:
+    """JSON Schema for one entity item, allowing ``children`` ``remaining_depth`` levels deeper."""
+    properties: dict[str, Any] = {"type": {"type": "string"}, "value": {"type": "string"}}
+    if remaining_depth > 0:
+        properties = dict(properties)
+        properties["children"] = {
+            "type": "array",
+            "items": _entity_item_schema(remaining_depth - 1),
+        }
+    return {"type": "object", "properties": properties, "required": ["type"]}
+
+
+def _nested_entity_output_schema(max_depth: int) -> dict[str, Any]:
+    return {"type": "array", "items": _entity_item_schema(max_depth)}
 
 
 def _normalize_type_string(raw: str) -> str:
@@ -71,8 +84,9 @@ class Entity(BaseModel):
 
     Either a leaf -- ``value`` set, ``children`` ``None`` -- or a group
     representing one instance of a repeating structured record -- ``value``
-    ``None``, ``children`` set to that instance's own leaf entities. Groups
-    are not recursive: a child never has its own ``children``.
+    ``None``, ``children`` set to that instance's own entities (which may
+    themselves be leaves or further groups, depending on the extractor's
+    ``max_depth``).
     """
 
     type: str
@@ -148,33 +162,39 @@ class FlatEntityExtractor:
 
 
 class NestedEntityExtractor:
-    """Extracts entities from a single text via a backend, one level deep.
+    """Extracts entities from a single text via a backend, schema-free and depth-bounded.
 
     Like :class:`FlatEntityExtractor`, but an entity may represent one
     instance of a repeating structured record (e.g. a receipt's line
-    items) by carrying ``children`` -- that instance's own flat entities
-    -- instead of a scalar ``value``. Repeated top-level entities of the
-    same group ``type`` then read as "array of that group," the same
+    items) by carrying ``children`` -- that instance's own entities --
+    instead of a scalar ``value``. Repeated entities of the same group
+    ``type`` at a given level then read as "array of that group," the same
     repetition-as-array-signal :class:`FlatEntityExtractor` relies on for
     scalar arrays.
 
-    Unconstrained only: unlike :class:`FlatEntityExtractor`, there is no
-    ``entity_schema`` vocabulary constraint yet (planned as a follow-up,
-    once :class:`EntityTypeNormalizer` can learn a two-tier group/child
-    vocabulary). The backend is always free to invent its own labels.
+    ``max_depth`` bounds how many levels of ``children`` are allowed below
+    the top level (default ``1``): both the output JSON Schema handed to
+    the backend and the defensive parsing of its response cap nesting
+    there, dropping anything deeper. Raising it lets the schema-free
+    extraction step see deeper structures (e.g. a group within a group),
+    at the cost of a larger/more recursive grammar for
+    ``constrained_decoding`` backends.
 
-    Nesting is capped at one level as a defensive measure: any ``children``
-    that itself declares nested ``children`` has that nesting dropped,
-    keeping only its own ``type``/``value``.
+    Unconstrained only: unlike :class:`FlatEntityExtractor`, there is no
+    ``entity_schema`` vocabulary constraint here. Constraining extraction to
+    a known vocabulary for the nested case is schema inference's job (see
+    ``SchemaInferer``), not this extractor's.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(self, backend: Backend, *, max_depth: int = DEFAULT_MAX_DEPTH) -> None:
         self._backend = backend
+        self._max_depth = max_depth
 
     def extract(self, text: str) -> list[Entity]:
         """Extract entities mentioned in ``text``, including any groups."""
         prompt = build_nested_entity_extraction_prompt(text)
-        raw = self._backend.generate(prompt, schema=_NESTED_ENTITY_OUTPUT_SCHEMA)
+        schema = _nested_entity_output_schema(self._max_depth)
+        raw = self._backend.generate(prompt, schema=schema)
         try:
             data = extract_json(raw)
         except json.JSONDecodeError as exc:
@@ -184,43 +204,41 @@ class NestedEntityExtractor:
 
         entities = []
         for item in data:
-            entity = _parse_top_level_entity(item)
+            entity = _parse_entity(item, self._max_depth)
             if entity is not None:
                 entities.append(entity)
         return entities
 
 
-def _parse_top_level_entity(item: Any) -> Entity | None:
+def _parse_entity(item: Any, remaining_depth: int) -> Entity | None:
     if not isinstance(item, dict) or "type" not in item:
         return None
     entity_type = str(item["type"])
     children_raw = item.get("children")
-    if isinstance(children_raw, list):
-        return Entity(type=entity_type, children=_parse_children(children_raw))
+    if remaining_depth > 0 and isinstance(children_raw, list):
+        children = [
+            child
+            for child in (
+                _parse_entity(raw_child, remaining_depth - 1) for raw_child in children_raw
+            )
+            if child is not None
+        ]
+        return Entity(type=entity_type, children=children)
     if "value" in item:
         return Entity(type=entity_type, value=str(item["value"]))
     return None
-
-
-def _parse_children(children_raw: list[Any]) -> list[Entity]:
-    children = []
-    for child in children_raw:
-        if not isinstance(child, dict) or "type" not in child or "value" not in child:
-            continue
-        children.append(Entity(type=str(child["type"]), value=str(child["value"])))
-    return children
 
 
 class EntityRenderer:
     """Renders a list of entities back into text via a backend.
 
     The reverse of :class:`FlatEntityExtractor` and :class:`NestedEntityExtractor`.
-    Not schema-aware -- unlike :func:`dtxt.d2t.render`, there is no
+    Not schema-aware -- unlike ``StructuredEntityRenderer``, there is no
     ``Schema`` here to supply field descriptions/examples/style, just the
-    raw entities (including any group's ``children``). This makes it
-    useful mainly as a round-trip check on entity extraction and
-    normalization quality (extract -> normalize -> render -> re-extract),
-    not as a general-purpose D2T replacement.
+    raw entities (including a group's ``children``, one level of them).
+    This makes it useful mainly as a round-trip check on entity extraction
+    and normalization quality (extract -> normalize -> render ->
+    re-extract), not as a general-purpose D2T replacement.
     """
 
     def __init__(self, backend: Backend) -> None:
@@ -242,21 +260,38 @@ def _render_item(entity: Entity) -> tuple[str, str | list[tuple[str, str]]]:
 
 
 class EntityTypeNormalizer:
-    """Reconciles entity types observed across a corpus into canonical names.
+    """Reconciles entity types observed across a corpus into canonical names, level by level.
 
-    ``fit`` calls the backend once to merge synonymous types (e.g. "name"
-    and "full_name") into a single canonical, snake_case type name, and
-    keeps the resulting mapping on ``self.mapping``. ``transform`` applies
-    that mapping without touching the backend, so a fitted mapping can be
-    persisted with ``save`` and reused later via ``load``.
+    ``fit`` calls the backend once per level to merge synonymous types
+    (e.g. "name" and "full_name") into a single canonical, snake_case type
+    name for that level, keeping the result on ``self.mapping``. It then
+    pools every occurrence of each canonical group type's ``children`` --
+    across every entity list and every occurrence within it -- and
+    recurses into a child :class:`EntityTypeNormalizer` (kept on
+    ``self.children``, keyed by canonical group type) to normalize the
+    next level down the same way. A group's ``children`` are themselves
+    entity lists, so this recursion bottoms out naturally once entities
+    stop carrying ``children`` (i.e. at whatever ``max_depth``
+    :class:`NestedEntityExtractor` was run with).
+
+    A canonical type observed as both a scalar leaf and a group across the
+    corpus is not disambiguated here -- both occurrence kinds are pooled
+    and passed through as-is. Deciding the field's ultimate shape (scalar
+    vs. object/array) is schema construction's job, which has the
+    corpus-wide coverage numbers to make that call.
+
+    ``transform`` applies the fitted mapping (recursively) without
+    touching the backend, so a fitted mapping can be persisted with
+    ``save`` and reused later via ``load``.
     """
 
     def __init__(self, backend: Backend) -> None:
         self._backend = backend
         self.mapping: dict[str, str] = {}
+        self.children: dict[str, EntityTypeNormalizer] = {}
 
     def fit(self, entity_lists: list[list[Entity]]) -> None:
-        """Compute ``self.mapping`` from the entity types observed in ``entity_lists``."""
+        """Compute ``self.mapping`` (and recursively, ``self.children``) from ``entity_lists``."""
         examples: dict[str, list[str]] = {}
         for entities in entity_lists:
             for entity in entities:
@@ -271,6 +306,7 @@ class EntityTypeNormalizer:
 
         if not examples:
             self.mapping = {}
+            self.children = {}
             return
 
         prompt = build_entity_type_merge_prompt(examples)
@@ -288,9 +324,24 @@ class EntityTypeNormalizer:
             if isinstance(raw_type, str) and isinstance(canonical, str)
         }
 
+        pooled: dict[str, list[list[Entity]]] = {}
+        for entities in entity_lists:
+            for entity in entities:
+                if entity.children is None:
+                    continue
+                normalized = _normalize_type_string(entity.type)
+                canonical = self.mapping.get(normalized, normalized)
+                pooled.setdefault(canonical, []).append(entity.children)
+
+        self.children = {}
+        for canonical, children_lists in pooled.items():
+            child_normalizer = EntityTypeNormalizer(self._backend)
+            child_normalizer.fit(children_lists)
+            self.children[canonical] = child_normalizer
+
     def entity_schema(self) -> dict[str, Any] | None:
-        """A JSON Schema fragment constraining an entity's ``type`` to the
-        canonical vocabulary learned by ``fit``, for reuse with
+        """A JSON Schema fragment constraining an entity's ``type`` to this
+        level's canonical vocabulary learned by ``fit``, for reuse with
         :class:`FlatEntityExtractor`'s ``entity_schema`` param. ``None`` if
         ``fit`` hasn't run yet (or ran on empty input).
         """
@@ -299,37 +350,68 @@ class EntityTypeNormalizer:
         return {"type": "string", "enum": sorted(set(self.mapping.values()))}
 
     def transform(self, entity_lists: list[list[Entity]]) -> list[list[Entity]]:
-        """Apply ``self.mapping`` to ``entity_lists``, without calling the backend.
+        """Apply the fitted mapping (recursively), without calling the backend."""
+        return [
+            [self._transform_entity(entity) for entity in entities] for entities in entity_lists
+        ]
 
-        A type not covered by ``self.mapping`` (e.g. never seen during
-        ``fit``) falls back to its rule-normalized form.
-        """
-        result = []
-        for entities in entity_lists:
-            mapped = []
-            for entity in entities:
-                normalized = _normalize_type_string(entity.type)
-                canonical = self.mapping.get(normalized, normalized)
-                mapped.append(Entity(type=canonical, value=entity.value))
-            result.append(mapped)
-        return result
+    def _transform_entity(self, entity: Entity) -> Entity:
+        normalized = _normalize_type_string(entity.type)
+        canonical = self.mapping.get(normalized, normalized)
+        if entity.children is None:
+            return Entity(type=canonical, value=entity.value)
+        child_normalizer = self.children.get(canonical)
+        if child_normalizer is not None:
+            children = [child_normalizer._transform_entity(child) for child in entity.children]
+        else:
+            # Never seen during fit (e.g. a group type absent from the fitted corpus):
+            # fall back to rule-normalization, recursively, rather than dropping children.
+            children = [_rule_normalize_entity(child) for child in entity.children]
+        return Entity(type=canonical, children=children)
+
+    def to_dict(self) -> dict[str, Any]:
+        """This normalizer's fitted state as a plain, JSON-serializable nested dict."""
+        return {
+            "mapping": dict(self.mapping),
+            "children": {canonical: child.to_dict() for canonical, child in self.children.items()},
+        }
+
+    @classmethod
+    def _from_dict(cls, data: dict[str, Any], backend: Backend) -> EntityTypeNormalizer:
+        normalizer = cls(backend)
+        mapping = data.get("mapping", {})
+        if isinstance(mapping, dict):
+            normalizer.mapping = {str(k): str(v) for k, v in mapping.items()}
+        children = data.get("children", {})
+        if isinstance(children, dict):
+            normalizer.children = {
+                str(canonical): cls._from_dict(child, backend)
+                for canonical, child in children.items()
+                if isinstance(child, dict)
+            }
+        return normalizer
 
     def save(self, path: str | Path) -> None:
-        """Persist ``self.mapping`` as JSON."""
-        Path(path).write_text(json.dumps(self.mapping, ensure_ascii=False, indent=2))
+        """Persist this normalizer's fitted state (recursively) as JSON."""
+        Path(path).write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
 
     @classmethod
     def load(cls, path: str | Path, backend: Backend) -> EntityTypeNormalizer:
-        """Load a previously ``save``d mapping into a new normalizer.
+        """Load a previously ``save``d state into a new normalizer.
 
         ``backend`` is still required (e.g. to ``fit`` further later) even
         though ``transform`` alone would not need it.
         """
-        normalizer = cls(backend)
         loaded = json.loads(Path(path).read_text())
         if not isinstance(loaded, dict):
-            raise EntityNormalizationError(f"{path} does not contain a JSON object mapping")
-        normalizer.mapping = {
-            str(raw_type): str(canonical) for raw_type, canonical in loaded.items()
-        }
-        return normalizer
+            raise EntityNormalizationError(f"{path} does not contain a JSON object")
+        return cls._from_dict(loaded, backend)
+
+
+def _rule_normalize_entity(entity: Entity) -> Entity:
+    normalized = _normalize_type_string(entity.type)
+    if entity.children is None:
+        return Entity(type=normalized, value=entity.value)
+    return Entity(
+        type=normalized, children=[_rule_normalize_entity(child) for child in entity.children]
+    )

@@ -6,11 +6,11 @@ Schema-centric bidirectional conversion between text and structured data.
 
 ## Core features
 
-1. **Schema inference** (`infer_schema`): derive a schema from a collection of texts
-2. **T2D** (`parse`): convert text into a schema-conformant object
-3. **D2T** (`render`): convert an object into text
+1. **Schema inference** (`SchemaInferer`): derive a schema from a collection of texts
+2. **T2D** (`StructuredEntityExtractor`): convert text into a schema-conformant object
+3. **D2T** (`StructuredEntityRenderer`): convert an object into text
 4. **Round-trip verification** (`check_roundtrip`): check that
-   `parse(render(obj)) ≈ obj` for a given schema and backend
+   `extract(render(obj)) ≈ obj` for a given schema and backend
 
 ## Install
 
@@ -41,25 +41,25 @@ schema = Schema({
     "required": ["name", "age"],
 })
 
-# Backends can be set globally per function...
-dtxt.configure(parse=MockBackend(), render=MockBackend())
+# Each class takes its backend at construction -- there is no global config.
+extractor = dtxt.StructuredEntityExtractor(MockBackend(), schema)
+renderer = dtxt.StructuredEntityRenderer(MockBackend(), schema)
 
-# ...or overridden per call via backend=.
-obj = dtxt.parse("Alice is 30 years old.", schema, backend=MockBackend())
-text = dtxt.render({"name": "Alice", "age": 30}, schema)
+obj = extractor.extract("Alice is 30 years old.")
+text = renderer.render({"name": "Alice", "age": 30})
 
-result = dtxt.check_roundtrip({"name": "Alice", "age": 30}, schema)
-result.ok  # True if parse(render(obj)) == obj on every schema field
+result = dtxt.check_roundtrip(
+    {"name": "Alice", "age": 30}, schema, renderer=renderer, extractor=extractor
+)
+result.ok  # True if extract(render(obj)) == obj on every schema field
 ```
 
 Swap `MockBackend` for a real one:
 
 ```python
-dtxt.configure(
-    infer=dtxt.backends.Anthropic("claude-sonnet-4-6"),
-    parse=dtxt.backends.LlamaCpp("model.gguf", n_ctx=8192),
-    render=dtxt.backends.Anthropic("claude-sonnet-4-6"),
-)
+extractor = dtxt.StructuredEntityExtractor(dtxt.backends.LlamaCpp("model.gguf", n_ctx=8192), schema)
+renderer = dtxt.StructuredEntityRenderer(dtxt.backends.Anthropic("claude-sonnet-4-6"), schema)
+inferer = dtxt.SchemaInferer(dtxt.backends.Anthropic("claude-sonnet-4-6"))
 ```
 
 `LlamaCpp` locates a model either by local path (`model_path`) or by
@@ -88,11 +88,12 @@ conformance on their own:
   the original schema is still checked afterwards.
 
 So all three go through dtxt's retry + validation loop the same way.
-`parse_many` runs concurrently via asyncio for Anthropic/OpenAI, bounded by
-`max_concurrency` (default 8) to avoid tripping rate limits; `LlamaCpp`
-processes it sequentially in-process so its prompt cache stays warm. A
-partial batch failure raises one `ParseError` naming how many texts failed
-and the first failing index, rather than aborting on the first error.
+`StructuredEntityExtractor.extract_many` runs concurrently via asyncio for
+Anthropic/OpenAI, bounded by `max_concurrency` (default 8) to avoid
+tripping rate limits; `LlamaCpp` processes it sequentially in-process so
+its prompt cache stays warm. A partial batch failure raises one
+`ParseError` naming how many texts failed and the first failing index,
+rather than aborting on the first error.
 
 Style is controllable at both the schema and call level:
 
@@ -103,21 +104,36 @@ schema = Schema({
     "required": ["name"],
     "x-dtxt-style": "formal, third person",  # schema-wide default
 })
-dtxt.render(obj, schema)                       # uses "formal, third person"
-dtxt.render(obj, schema, style="casual, upbeat")  # overrides it for this call
+renderer = dtxt.StructuredEntityRenderer(backend, schema)
+renderer.render(obj)                       # uses "formal, third person"
+renderer.render(obj, style="casual, upbeat")  # overrides it for this call
+```
+
+Schema inference (`SchemaInferer`) works schema-free first: each text is
+reduced to a tree of `(type, value)` entities (optionally with `children`
+for repeating structured records, e.g. a receipt's line items) via
+`dtxt.entities`, type names are reconciled across the corpus, and a field
+is kept only if it meets a `min_coverage` threshold -- applied recursively,
+so nested object fields go through the same coverage test as top-level
+ones:
+
+```python
+inferer = dtxt.SchemaInferer(backend, min_coverage=0.6)
+schema = inferer.infer(texts)
 ```
 
 ## Status
 
-Released as [`dtxt` `0.7.0`](https://pypi.org/project/dtxt/0.7.0/) on PyPI.
-M1-M5 of the milestone plan are implemented: `Schema`, `parse` /
-`parse_many` (asyncio-parallel + bounded concurrency for API backends),
-`render` (with schema-level and per-call style control), `infer_schema`
-(sampling + merge, `min_coverage`), `check_roundtrip`, `configure`, a mock
-backend for testing, and the Anthropic / OpenAI / llama.cpp backends.
-`dtxt.entities` (`FlatEntityExtractor`, `NestedEntityExtractor`,
-`EntityTypeNormalizer`, `EntityRenderer`) is a new, not-yet-wired-in
-building block toward an entity-based redesign of `infer_schema`. See
+Released as [`dtxt` `0.7.0`](https://pypi.org/project/dtxt/0.7.0/) on PyPI;
+`0.8.0` (unreleased) reworks the public API to be class-based -- see
+`CHANGELOG.md`. `Schema`, `StructuredEntityExtractor` (T2D, with
+`extract_many` asyncio batching), `StructuredEntityRenderer` (D2T, with
+schema-level and per-call style control), `SchemaInferer` (schema-free
+extraction + recursive coverage-based merge, `min_coverage`),
+`check_roundtrip`, a mock backend for testing, and the Anthropic / OpenAI /
+llama.cpp backends are implemented. `dtxt.entities`
+(`FlatEntityExtractor`, `NestedEntityExtractor`, `EntityTypeNormalizer`,
+`EntityRenderer`) is `SchemaInferer`'s internal implementation. See
 `CHANGELOG.md` for release notes and `CLAUDE.md` for what's next.
 
 ## Development

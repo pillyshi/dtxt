@@ -1,23 +1,33 @@
-"""infer_schema: schema inference via sampling + merge.
+"""SchemaInferer: schema inference via schema-free extraction + recursive merge.
 
-Texts are sampled in small batches (kind to small context windows); each
-batch yields a candidate schema, and a field is kept in the merged schema
-only if it appears in at least ``min_coverage`` of the candidates.
+Each text is first reduced to a schema-free entity tree via
+``NestedEntityExtractor`` -- the same step that's useful on its own for
+seeing what information a corpus is actually made of, before any schema
+exists. ``EntityTypeNormalizer`` then reconciles entity type names across
+the whole corpus, one level at a time. Finally, a coverage-based merge
+turns the normalized entity trees into a JSON Schema: a canonical type is
+kept as a field only if it appears in at least ``min_coverage`` of the
+instances at its level, repetition within a single instance signals an
+array, and a canonical type is treated as an object (recursing into its
+own coverage-based merge) if most of its occurrences across the corpus
+carried ``children`` rather than a scalar ``value``.
 """
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from typing import Any
 
-from ._config import resolve_backend
-from ._util import extract_json
 from .backends.base import Backend
-from .prompts import build_infer_prompt
+from .entities import (
+    DEFAULT_MAX_DEPTH,
+    Entity,
+    EntityExtractionError,
+    EntityTypeNormalizer,
+    NestedEntityExtractor,
+)
 from .schema import Schema
 
-DEFAULT_BATCH_SIZE = 5
 DEFAULT_MIN_COVERAGE = 0.6
 
 
@@ -25,72 +35,98 @@ class InferError(Exception):
     """Raised when schema inference cannot produce a usable schema."""
 
 
-def _batched(items: list[str], size: int) -> list[list[str]]:
-    return [items[i : i + size] for i in range(0, len(items), size)]
+class SchemaInferer:
+    """Infers a ``Schema`` shared by a collection of texts, via a backend."""
+
+    def __init__(
+        self,
+        backend: Backend,
+        *,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+        min_coverage: float = DEFAULT_MIN_COVERAGE,
+    ) -> None:
+        self._backend = backend
+        self._max_depth = max_depth
+        self._min_coverage = min_coverage
+
+    def infer(self, texts: list[str]) -> Schema:
+        """Infer a JSON Schema shared by ``texts``."""
+        if not texts:
+            raise InferError("cannot infer a schema from an empty text collection")
+
+        extractor = NestedEntityExtractor(self._backend, max_depth=self._max_depth)
+        entity_lists: list[list[Entity]] = []
+        for text in texts:
+            try:
+                entity_lists.append(extractor.extract(text))
+            except EntityExtractionError:
+                continue
+        if not entity_lists:
+            raise InferError("backend did not return a usable entity list for any text")
+
+        normalizer = EntityTypeNormalizer(self._backend)
+        normalizer.fit(entity_lists)
+        normalized = normalizer.transform(entity_lists)
+
+        properties, required = _merge_entity_lists(normalized, self._min_coverage)
+        if not properties:
+            raise InferError(
+                f"no fields met the min_coverage={self._min_coverage} threshold across "
+                f"{len(entity_lists)} text(s)"
+            )
+        return Schema({"type": "object", "properties": properties, "required": required})
 
 
-def _candidate_schema(batch: list[str], backend: Backend) -> dict[str, Any] | None:
-    prompt = build_infer_prompt(batch)
-    raw = backend.generate(prompt)
-    try:
-        candidate = extract_json(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(candidate, dict) or not isinstance(candidate.get("properties"), dict):
-        return None
-    return candidate
+def _merge_entity_lists(
+    entity_lists: list[list[Entity]], min_coverage: float
+) -> tuple[dict[str, Any], list[str]]:
+    n = len(entity_lists)
+    occurrences: dict[str, list[Entity]] = {}
+    presence: Counter[str] = Counter()
+    repeated: set[str] = set()
 
-
-def _merge_candidates(candidates: list[dict[str, Any]], min_coverage: float) -> dict[str, Any]:
-    n = len(candidates)
-    field_types: dict[str, Counter[str]] = {}
-    field_count: Counter[str] = Counter()
-
-    for candidate in candidates:
-        for name, field_schema in candidate["properties"].items():
-            field_count[name] += 1
-            field_types.setdefault(name, Counter())[field_schema.get("type", "string")] += 1
+    for entities in entity_lists:
+        counts: Counter[str] = Counter()
+        for entity in entities:
+            occurrences.setdefault(entity.type, []).append(entity)
+            counts[entity.type] += 1
+        for entity_type, count in counts.items():
+            presence[entity_type] += 1
+            if count > 1:
+                repeated.add(entity_type)
 
     properties: dict[str, Any] = {}
     required: list[str] = []
-    for name, count in field_count.items():
+    for entity_type, count in presence.items():
         coverage = count / n
         if coverage < min_coverage:
             continue
-        most_common_type, _ = field_types[name].most_common(1)[0]
-        properties[name] = {"type": most_common_type}
+
+        entity_occurrences = occurrences[entity_type]
+        group_count = sum(1 for entity in entity_occurrences if entity.children is not None)
+        # Majority vote: a canonical type observed as both scalar and group
+        # across the corpus is resolved here, at merge time, rather than by
+        # the normalizer -- this is the one place with corpus-wide coverage.
+        is_group = group_count / len(entity_occurrences) >= 0.5
+
+        if is_group:
+            children_lists = [
+                entity.children for entity in entity_occurrences if entity.children is not None
+            ]
+            child_properties, child_required = _merge_entity_lists(children_lists, min_coverage)
+            field_schema: dict[str, Any] = {
+                "type": "object",
+                "properties": child_properties,
+                "required": child_required,
+            }
+        else:
+            field_schema = {"type": "string"}
+
+        if entity_type in repeated:
+            field_schema = {"type": "array", "items": field_schema}
+
+        properties[entity_type] = field_schema
         if coverage >= 1.0:
-            required.append(name)
+            required.append(entity_type)
 
-    return {"type": "object", "properties": properties, "required": sorted(required)}
-
-
-def infer_schema(
-    texts: list[str],
-    *,
-    backend: Backend | None = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    min_coverage: float = DEFAULT_MIN_COVERAGE,
-) -> Schema:
-    """Infer a JSON Schema shared by ``texts``."""
-    if not texts:
-        raise InferError("cannot infer a schema from an empty text collection")
-
-    resolved = resolve_backend("infer", backend)
-    batches = _batched(texts, batch_size)
-
-    candidates = [
-        candidate
-        for candidate in (_candidate_schema(batch, resolved) for batch in batches)
-        if candidate is not None
-    ]
-    if not candidates:
-        raise InferError("backend did not return any usable candidate schema")
-
-    merged = _merge_candidates(candidates, min_coverage)
-    if not merged["properties"]:
-        raise InferError(
-            f"no fields met the min_coverage={min_coverage} threshold across "
-            f"{len(candidates)} candidate schema(s)"
-        )
-    return Schema(merged)
+    return properties, sorted(required)

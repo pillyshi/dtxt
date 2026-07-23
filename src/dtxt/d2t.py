@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._config import resolve_backend
 from .backends.base import Backend
 from .prompts import build_d2t_prompt
 from .schema import Schema
@@ -28,26 +27,34 @@ def _field_guidance(schema: Schema) -> str:
     return "\n".join(lines) if lines else "(none)"
 
 
-def render(
-    obj: dict[str, Any],
-    schema: Schema,
-    *,
-    style: str | None = None,
-    backend: Backend | None = None,
-) -> str:
-    """Convert ``obj`` into text, guided by ``schema``'s ``x-dtxt-*`` metadata.
+class StructuredEntityRenderer:
+    """Converts an object conforming to a fixed ``Schema`` into text, via a backend.
 
-    ``style`` overrides the schema's own ``x-dtxt-style`` (its root-level
-    style hint) for this call; per-field style hints still apply on top of
-    either one.
+    The schema-aware counterpart to :class:`dtxt.entities.EntityRenderer`,
+    which renders schema-free entities.
     """
-    resolved = resolve_backend("render", backend)
-    json_schema = schema.to_json_schema()
-    effective_style = style if style is not None else schema.style
-    prompt = build_d2t_prompt(
-        obj,
-        json_schema,
-        style=effective_style or "(none)",
-        field_guidance=_field_guidance(schema),
-    )
-    return resolved.generate(prompt)
+
+    def __init__(self, backend: Backend, schema: Schema) -> None:
+        self._backend = backend
+        self._schema = schema
+
+    @property
+    def schema(self) -> Schema:
+        return self._schema
+
+    def render(self, obj: dict[str, Any], *, style: str | None = None) -> str:
+        """Convert ``obj`` into text, guided by the schema's ``x-dtxt-*`` metadata.
+
+        ``style`` overrides the schema's own ``x-dtxt-style`` (its root-level
+        style hint) for this call; per-field style hints still apply on top of
+        either one.
+        """
+        json_schema = self._schema.to_json_schema()
+        effective_style = style if style is not None else self._schema.style
+        prompt = build_d2t_prompt(
+            obj,
+            json_schema,
+            style=effective_style or "(none)",
+            field_guidance=_field_guidance(self._schema),
+        )
+        return self._backend.generate(prompt)

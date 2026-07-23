@@ -2,6 +2,55 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-07-23
+
+### Changed (breaking)
+
+- Public API is now class-based; `dtxt.configure()` is removed along with
+  the global-default-backend mechanism (`_config.py`). Every class takes
+  its `backend` as a constructor argument instead.
+  - `dtxt.parse` / `dtxt.parse_many` -> `dtxt.StructuredEntityExtractor`
+    (constructed with `backend, schema`; methods `.extract(text)` /
+    `.extract_many(texts)`).
+  - `dtxt.render` -> `dtxt.StructuredEntityRenderer` (constructed with
+    `backend, schema`; method `.render(obj, *, style=None)`).
+  - `dtxt.infer_schema` -> `dtxt.SchemaInferer` (constructed with `backend,
+    max_depth=1, min_coverage=0.6`; method `.infer(texts)`). Its
+    implementation changed along with the rename (see below), so this is
+    not a pure rename for `infer_schema` -- inferred schemas may differ
+    from `0.7.0`'s.
+  - `check_roundtrip(obj, schema, *, renderer=..., extractor=...)` now
+    takes a `StructuredEntityRenderer`/`StructuredEntityExtractor` pair
+    instead of raw `render_backend`/`parse_backend`.
+- `SchemaInferer` no longer asks a backend to invent a candidate JSON
+  Schema directly per batch. It now reuses `dtxt.entities`'s building
+  blocks: `NestedEntityExtractor` extracts each text schema-free (one
+  backend call per text, skipping texts that fail extraction rather than
+  aborting), `EntityTypeNormalizer` reconciles type names across the
+  corpus, and a new recursive coverage-based merge (replacing the old
+  flat-only one) turns the normalized entity trees into a `Schema`.
+  `min_coverage` is now applied at every nesting level, not just the top
+  one; `batch_size` is gone (there's no longer a "batch" to size --
+  extraction is one call per text). A field's type is now inferred as
+  `string`, `array`, or a recursively-merged `object`/array-of-`object`
+  based on entity shape, rather than by asking the backend to guess a
+  JSON Schema type.
+- `NestedEntityExtractor(backend, *, max_depth=1)`: the one-level nesting
+  cap is now a configurable `max_depth` (still defaulting to one level, so
+  default behavior is unchanged). Raising it lets `children` themselves
+  carry `children`, recursively, at the cost of a larger/more recursive
+  output JSON Schema.
+- `EntityTypeNormalizer` now normalizes recursively, one level at a time:
+  after fitting a level's own type-name mapping, it pools every occurrence
+  of each canonical group type's `children` across the whole corpus and
+  recurses into a child `EntityTypeNormalizer` (`self.children`, keyed by
+  canonical group type) to normalize the next level down. `transform()` no
+  longer drops a group entity's `children` (`0.7.0`'s `transform` silently
+  discarded them -- a data-loss bug, not an intentional behavior being
+  changed here). `save`/`load`'s on-disk format changed to a nested
+  `{"mapping": ..., "children": {...}}` structure to hold this; `0.7.0`'s
+  flat mapping files are not compatible with `0.8.0`'s `load()`.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added

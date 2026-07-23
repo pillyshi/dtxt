@@ -1,5 +1,6 @@
-from dtxt import Schema, render
+from dtxt import Schema
 from dtxt.backends import MockBackend
+from dtxt.d2t import StructuredEntityRenderer
 
 SCHEMA = Schema(
     {
@@ -18,12 +19,14 @@ SCHEMA = Schema(
 
 def test_render_returns_backend_output() -> None:
     backend = MockBackend(responses=["Alice says hello."])
-    assert render({"name": "Alice"}, SCHEMA, backend=backend) == "Alice says hello."
+    renderer = StructuredEntityRenderer(backend, SCHEMA)
+    assert renderer.render({"name": "Alice"}) == "Alice says hello."
 
 
 def test_render_prompt_includes_object_and_field_guidance() -> None:
     backend = MockBackend(responses=["ignored"])
-    render({"name": "Alice"}, SCHEMA, backend=backend)
+    renderer = StructuredEntityRenderer(backend, SCHEMA)
+    renderer.render({"name": "Alice"})
 
     assert len(backend.calls) == 1
     prompt, schema_arg = backend.calls[0]
@@ -35,7 +38,8 @@ def test_render_prompt_includes_object_and_field_guidance() -> None:
 
 def test_render_without_style_shows_none_placeholder() -> None:
     backend = MockBackend(responses=["ignored"])
-    render({"name": "Alice"}, SCHEMA, backend=backend)
+    renderer = StructuredEntityRenderer(backend, SCHEMA)
+    renderer.render({"name": "Alice"})
     prompt, _ = backend.calls[0]
     assert "# Overall style\n(none)" in prompt
 
@@ -50,7 +54,8 @@ def test_render_uses_schema_root_style_by_default() -> None:
         }
     )
     backend = MockBackend(responses=["ignored"])
-    render({"name": "Alice"}, schema, backend=backend)
+    renderer = StructuredEntityRenderer(backend, schema)
+    renderer.render({"name": "Alice"})
     prompt, _ = backend.calls[0]
     assert "# Overall style\nformal, third person" in prompt
 
@@ -65,6 +70,7 @@ def test_render_style_argument_overrides_schema_style() -> None:
         }
     )
     backend = MockBackend(responses=["ignored"])
-    render({"name": "Alice"}, schema, style="casual, upbeat", backend=backend)
+    renderer = StructuredEntityRenderer(backend, schema)
+    renderer.render({"name": "Alice"}, style="casual, upbeat")
     prompt, _ = backend.calls[0]
     assert "# Overall style\ncasual, upbeat" in prompt

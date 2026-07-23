@@ -1,4 +1,4 @@
-"""round-trip verification: ``parse(render(obj)) ≈ obj``.
+"""round-trip verification: ``extract(render(obj)) ≈ obj``.
 
 Treated as a first-class feature: this is the main way to tell whether a
 schema + backend pair actually preserves information through D2T then T2D.
@@ -9,10 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .backends.base import Backend
-from .d2t import render
+from .d2t import StructuredEntityRenderer
 from .schema import Schema
-from .t2d import parse
+from .t2d import StructuredEntityExtractor
 
 
 @dataclass
@@ -31,16 +30,16 @@ def check_roundtrip(
     obj: dict[str, Any],
     schema: Schema,
     *,
-    render_backend: Backend | None = None,
-    parse_backend: Backend | None = None,
+    renderer: StructuredEntityRenderer,
+    extractor: StructuredEntityExtractor,
 ) -> RoundtripResult:
-    """Render ``obj`` to text, parse it back, and diff against ``obj``.
+    """Render ``obj`` to text, extract it back, and diff against ``obj``.
 
-    Comparison is restricted to ``schema``'s declared fields, since ``parse``
-    only ever populates those.
+    Comparison is restricted to ``schema``'s declared fields, since
+    ``extractor`` only ever populates those.
     """
-    text = render(obj, schema, backend=render_backend)
-    reparsed = parse(text, schema, backend=parse_backend)
+    text = renderer.render(obj)
+    reparsed = extractor.extract(text)
 
     mismatches: dict[str, tuple[Any, Any]] = {}
     for key in schema.properties:

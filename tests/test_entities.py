@@ -278,6 +278,48 @@ def test_nested_extract_passes_non_recursive_output_schema_to_backend() -> None:
     assert "children" not in child_schema["properties"]
 
 
+def test_nested_extract_supports_deeper_nesting_when_max_depth_is_increased() -> None:
+    raw = json.dumps(
+        [
+            {
+                "type": "line_item",
+                "children": [
+                    {
+                        "type": "sub_item",
+                        "children": [{"type": "nested", "value": "still here"}],
+                    }
+                ],
+            }
+        ]
+    )
+    backend = MockBackend(responses=[raw])
+    extractor = NestedEntityExtractor(backend, max_depth=2)
+
+    entities = extractor.extract("deeply nested text")
+
+    assert entities == [
+        Entity(
+            type="line_item",
+            children=[
+                Entity(type="sub_item", children=[Entity(type="nested", value="still here")])
+            ],
+        )
+    ]
+
+
+def test_nested_extract_output_schema_reflects_max_depth() -> None:
+    backend = MockBackend(responses=[json.dumps([{"type": "city", "value": "Kyoto"}])])
+    extractor = NestedEntityExtractor(backend, max_depth=2)
+
+    extractor.extract("Kyoto")
+
+    _, schema = backend.calls[0]
+    assert schema is not None
+    level1 = schema["items"]["properties"]["children"]["items"]
+    level2 = level1["properties"]["children"]["items"]
+    assert "children" not in level2["properties"]
+
+
 def test_nested_extract_render_re_extract_round_trip() -> None:
     extracted_raw = json.dumps(
         [
@@ -486,3 +528,78 @@ def test_save_and_load_round_trip(tmp_path: Path) -> None:
     loaded = EntityTypeNormalizer.load(path, MockBackend())
 
     assert loaded.mapping == normalizer.mapping
+
+
+def test_fit_recursively_normalizes_group_children() -> None:
+    backend = MockBackend(
+        responses=[
+            json.dumps({"line_item": "line_item"}),
+            json.dumps({"name": "item_name", "item_name": "item_name"}),
+        ]
+    )
+    normalizer = EntityTypeNormalizer(backend)
+    entity_lists = [
+        [Entity(type="line_item", children=[Entity(type="name", value="Widget")])],
+        [Entity(type="line_item", children=[Entity(type="item_name", value="Gadget")])],
+    ]
+
+    normalizer.fit(entity_lists)
+
+    assert normalizer.mapping == {"line_item": "line_item"}
+    assert normalizer.children["line_item"].mapping == {
+        "name": "item_name",
+        "item_name": "item_name",
+    }
+
+
+def test_fit_does_not_recurse_into_leaf_only_entities() -> None:
+    backend = MockBackend(responses=[json.dumps({"name": "person_name"})])
+    normalizer = EntityTypeNormalizer(backend)
+
+    normalizer.fit([[Entity(type="name", value="Alice")]])
+
+    assert normalizer.children == {}
+
+
+def test_transform_preserves_group_children_recursively() -> None:
+    normalizer = EntityTypeNormalizer(MockBackend())
+    normalizer.mapping = {"line_item": "line_item"}
+    child_normalizer = EntityTypeNormalizer(MockBackend())
+    child_normalizer.mapping = {"name": "item_name"}
+    normalizer.children = {"line_item": child_normalizer}
+
+    result = normalizer.transform(
+        [[Entity(type="line_item", children=[Entity(type="name", value="Widget")])]]
+    )
+
+    assert result == [
+        [Entity(type="line_item", children=[Entity(type="item_name", value="Widget")])]
+    ]
+
+
+def test_transform_falls_back_to_rule_normalization_for_unfitted_group_children() -> None:
+    normalizer = EntityTypeNormalizer(MockBackend())
+    normalizer.mapping = {}
+
+    result = normalizer.transform(
+        [[Entity(type="Line Item", children=[Entity(type="Item Name", value="Widget")])]]
+    )
+
+    assert result == [
+        [Entity(type="line_item", children=[Entity(type="item_name", value="Widget")])]
+    ]
+
+
+def test_save_and_load_round_trip_preserves_children(tmp_path: Path) -> None:
+    path = tmp_path / "mapping.json"
+    normalizer = EntityTypeNormalizer(MockBackend())
+    normalizer.mapping = {"line_item": "line_item"}
+    child_normalizer = EntityTypeNormalizer(MockBackend())
+    child_normalizer.mapping = {"name": "item_name"}
+    normalizer.children = {"line_item": child_normalizer}
+    normalizer.save(path)
+
+    loaded = EntityTypeNormalizer.load(path, MockBackend())
+
+    assert loaded.mapping == normalizer.mapping
+    assert loaded.children["line_item"].mapping == child_normalizer.mapping
