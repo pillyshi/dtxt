@@ -4,7 +4,7 @@ import json
 import pytest
 
 from dtxt import Schema
-from dtxt.backends import MockBackend
+from dtxt.backends import MockBackend, MockEmbedder
 from dtxt.t2d import ParseError, StructuredEntityExtractor
 
 SCHEMA = Schema(
@@ -183,3 +183,74 @@ def test_extract_many_raises_aggregated_error_on_partial_failure() -> None:
 
     with pytest.raises(ParseError, match=r"failed for 1/3"):
         extractor.extract_many(texts)
+
+
+def test_no_fewshots_reproduces_the_original_prompt() -> None:
+    backend = MockBackend(responses=[json.dumps({"name": "Alice"})])
+    extractor = StructuredEntityExtractor(backend, SCHEMA)
+
+    extractor.extract("Alice said hi.")
+
+    prompt, _ = backend.calls[0]
+    assert "# Examples" not in prompt
+
+
+def test_extract_embeds_top_k_most_similar_fewshots_into_the_prompt() -> None:
+    fewshots = [
+        ("Alice said hi.", {"name": "Alice"}),
+        ("Carol left early.", {"name": "Carol"}),
+    ]
+    embedder = MockEmbedder(
+        {
+            "Alice said hi.": [1.0, 0.0],
+            "Carol left early.": [0.0, 1.0],
+            "Alice mentioned something.": [1.0, 0.0],
+        }
+    )
+    backend = MockBackend(responses=[json.dumps({"name": "Alice"})])
+    extractor = StructuredEntityExtractor(
+        backend, SCHEMA, fewshots=fewshots, embedder=embedder, fewshot_k=1
+    )
+
+    extractor.extract("Alice mentioned something.")
+
+    prompt, _ = backend.calls[0]
+    assert "# Examples" in prompt
+    assert "Alice said hi." in prompt
+    assert "Carol left early." not in prompt
+
+
+def test_fewshots_are_embedded_once_at_construction() -> None:
+    fewshots = [("Alice said hi.", {"name": "Alice"})]
+    embedder = MockEmbedder({"Alice said hi.": [1.0, 0.0], "query": [1.0, 0.0]})
+    backend = MockBackend(responses=[json.dumps({"name": "Alice"})])
+
+    extractor = StructuredEntityExtractor(backend, SCHEMA, fewshots=fewshots, embedder=embedder)
+    assert embedder.calls == [["Alice said hi."]]
+
+    extractor.extract("query")
+    assert embedder.calls == [["Alice said hi."], ["query"]]
+
+
+def test_extract_many_batches_the_query_embedding_call() -> None:
+    fewshots = [("Alice said hi.", {"name": "Alice"})]
+    embedder = MockEmbedder(
+        {"Alice said hi.": [1.0, 0.0], "query 1": [1.0, 0.0], "query 2": [1.0, 0.0]}
+    )
+    backend = MockBackend(responses=[json.dumps({"name": "A"}), json.dumps({"name": "B"})])
+    extractor = StructuredEntityExtractor(backend, SCHEMA, fewshots=fewshots, embedder=embedder)
+
+    extractor.extract_many(["query 1", "query 2"])
+
+    # One call to embed the fewshot pool at construction, one batched call
+    # covering both query texts (not one call per text).
+    assert embedder.calls == [["Alice said hi."], ["query 1", "query 2"]]
+
+
+def test_fewshots_without_embedder_default_to_sentence_transformers() -> None:
+    # sentence-transformers is not installed in this environment, so the
+    # lazy default embedder should surface its usual helpful install error.
+    with pytest.raises(ImportError, match=r"pip install dtxt\[sentence-transformers\]"):
+        StructuredEntityExtractor(
+            MockBackend(), SCHEMA, fewshots=[("Alice said hi.", {"name": "Alice"})]
+        )

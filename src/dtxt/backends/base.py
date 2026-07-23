@@ -25,3 +25,17 @@ class Backend(Protocol):
 
     @property
     def capabilities(self) -> set[str]: ...
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """Anything that can turn texts into embedding vectors.
+
+    Used for few-shot example retrieval (see
+    :class:`dtxt.t2d.StructuredEntityExtractor`'s ``fewshots`` argument):
+    the extractor embeds its fixed pool of few-shot texts once, then embeds
+    each input text at extraction time to rank the pool by cosine
+    similarity.
+    """
+
+    def embed(self, texts: list[str]) -> list[list[float]]: ...

@@ -23,6 +23,21 @@ You convert unstructured text into a single JSON object that strictly follows th
 Respond with ONLY the JSON object. Do not include markdown fences or commentary.
 If a field's value cannot be determined from the text, set it to null."""
 
+T2D_FEWSHOT_TEMPLATE = """\
+You convert unstructured text into a single JSON object that strictly follows the given JSON Schema.
+
+# JSON Schema
+{schema}
+
+# Examples
+{examples}
+
+# Text
+{text}
+
+Respond with ONLY the JSON object. Do not include markdown fences or commentary.
+If a field's value cannot be determined from the text, set it to null."""
+
 T2D_RETRY_TEMPLATE = """\
 {base_prompt}
 
@@ -89,8 +104,22 @@ Respond with ONLY a JSON array of objects, each with a "type" key and a "value" 
 Do not include markdown fences or commentary."""
 
 
-def build_t2d_prompt(text: str, schema: dict[str, Any], *, template: str = T2D_TEMPLATE) -> str:
-    return template.format(schema=json.dumps(schema, ensure_ascii=False, indent=2), text=text)
+def build_t2d_prompt(
+    text: str,
+    schema: dict[str, Any],
+    *,
+    fewshots: list[tuple[str, dict[str, Any]]] | None = None,
+    template: str = T2D_TEMPLATE,
+    fewshot_template: str = T2D_FEWSHOT_TEMPLATE,
+) -> str:
+    schema_str = json.dumps(schema, ensure_ascii=False, indent=2)
+    if not fewshots:
+        return template.format(schema=schema_str, text=text)
+    examples = "\n\n".join(
+        f"Text: {example_text}\nJSON: {json.dumps(example_obj, ensure_ascii=False)}"
+        for example_text, example_obj in fewshots
+    )
+    return fewshot_template.format(schema=schema_str, examples=examples, text=text)
 
 
 def build_t2d_retry_prompt(

@@ -6,13 +6,16 @@ import asyncio
 import json
 from typing import Any
 
-from ._util import extract_json
-from .backends.base import Backend
+from ._util import cosine_similarity, extract_json
+from .backends.base import Backend, Embedder
 from .prompts import build_t2d_prompt, build_t2d_retry_prompt
 from .schema import Schema
 
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONCURRENCY = 8
+DEFAULT_FEWSHOT_K = 3
+
+Fewshot = tuple[str, dict[str, Any]]
 
 
 class ParseError(Exception):
@@ -24,6 +27,14 @@ class StructuredEntityExtractor:
 
     The schema-specified counterpart to :class:`dtxt.entities.FlatEntityExtractor`
     / :class:`dtxt.entities.NestedEntityExtractor`, which extract schema-free.
+
+    Optionally accepts a fixed pool of few-shot examples (``fewshots``, a
+    list of ``(text, obj)`` pairs). When given, each call embeds the input
+    text via ``embedder`` and picks the ``fewshot_k`` most similar examples
+    (cosine similarity) to include in the prompt. ``embedder`` defaults to
+    :class:`dtxt.backends.SentenceTransformersEmbedder` (a small
+    multilingual model) if not given. Leaving ``fewshots`` empty/``None``
+    reproduces the exact prompt used before few-shot support existed.
     """
 
     def __init__(
@@ -33,23 +44,65 @@ class StructuredEntityExtractor:
         *,
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        fewshots: list[Fewshot] | None = None,
+        embedder: Embedder | None = None,
+        fewshot_k: int = DEFAULT_FEWSHOT_K,
     ) -> None:
         self._backend = backend
         self._schema = schema
         self._max_retries = max_retries
         self._max_concurrency = max_concurrency
+        self._fewshots = list(fewshots) if fewshots else []
+        self._fewshot_k = fewshot_k
+        self._embedder: Embedder | None = None
+        self._fewshot_embeddings: list[list[float]] = []
+        if self._fewshots:
+            if embedder is None:
+                from .backends.sentence_transformers import SentenceTransformersEmbedder
+
+                embedder = SentenceTransformersEmbedder()
+            self._embedder = embedder
+            self._fewshot_embeddings = embedder.embed([text for text, _ in self._fewshots])
 
     @property
     def schema(self) -> Schema:
         return self._schema
+
+    def _rank_fewshots(self, query_embedding: list[float]) -> list[Fewshot]:
+        ranked = sorted(
+            zip(self._fewshots, self._fewshot_embeddings, strict=True),
+            key=lambda pair: cosine_similarity(query_embedding, pair[1]),
+            reverse=True,
+        )
+        return [fewshot for fewshot, _ in ranked[: self._fewshot_k]]
+
+    def _select_fewshots(self, text: str) -> list[Fewshot]:
+        if not self._fewshots:
+            return []
+        assert self._embedder is not None
+        query_embedding = self._embedder.embed([text])[0]
+        return self._rank_fewshots(query_embedding)
+
+    def _select_fewshots_many(self, texts: list[str]) -> list[list[Fewshot]]:
+        if not self._fewshots:
+            return [[] for _ in texts]
+        assert self._embedder is not None
+        # Embedding all query texts in one call lets embedder implementations
+        # batch (e.g. sentence-transformers' encode()), instead of paying a
+        # per-text model call for every text in the batch.
+        query_embeddings = self._embedder.embed(texts)
+        return [self._rank_fewshots(embedding) for embedding in query_embeddings]
 
     def extract(self, text: str) -> dict[str, Any]:
         """Convert ``text`` into an object conforming to this extractor's schema.
 
         Missing or unextractable fields are represented as ``None``.
         """
+        return self._extract_with_fewshots(text, self._select_fewshots(text))
+
+    def _extract_with_fewshots(self, text: str, fewshots: list[Fewshot]) -> dict[str, Any]:
         json_schema = self._schema.to_json_schema()
-        prompt = build_t2d_prompt(text, json_schema)
+        prompt = build_t2d_prompt(text, json_schema, fewshots=fewshots)
 
         # A constrained-decoding backend only guarantees the grammar-facing part
         # of the schema (see backends/llamacpp.py's two-stage split); keywords
@@ -100,20 +153,29 @@ class StructuredEntityExtractor:
             return []
         if getattr(self._backend, "agenerate", None) is not None:
             return asyncio.run(self._extract_many_async(texts))
-        return [self.extract(text) for text in texts]
+        fewshots_per_text = self._select_fewshots_many(texts)
+        return [
+            self._extract_with_fewshots(text, fewshots)
+            for text, fewshots in zip(texts, fewshots_per_text, strict=True)
+        ]
 
     async def _extract_many_async(self, texts: list[str]) -> list[dict[str, Any]]:
         semaphore = asyncio.Semaphore(self._max_concurrency)
+        fewshots_per_text = self._select_fewshots_many(texts)
 
-        async def _bounded(text: str) -> dict[str, Any]:
+        async def _bounded(text: str, fewshots: list[Fewshot]) -> dict[str, Any]:
             async with semaphore:
-                return await self._extract_async(text)
+                return await self._extract_async(text, fewshots)
 
         # `return_exceptions=True` lets every text finish (success or failure)
         # instead of raising on the first failure and leaving other in-flight
         # requests to be torn down as dangling tasks.
         results: list[dict[str, Any] | BaseException] = await asyncio.gather(
-            *(_bounded(text) for text in texts), return_exceptions=True
+            *(
+                _bounded(text, fewshots)
+                for text, fewshots in zip(texts, fewshots_per_text, strict=True)
+            ),
+            return_exceptions=True,
         )
 
         failures = [(i, r) for i, r in enumerate(results) if isinstance(r, BaseException)]
@@ -126,10 +188,14 @@ class StructuredEntityExtractor:
 
         return [result for result in results if isinstance(result, dict)]
 
-    async def _extract_async(self, text: str) -> dict[str, Any]:
+    async def _extract_async(
+        self, text: str, fewshots: list[Fewshot] | None = None
+    ) -> dict[str, Any]:
+        if fewshots is None:
+            fewshots = self._select_fewshots(text)
         backend: Any = self._backend
         json_schema = self._schema.to_json_schema()
-        prompt = build_t2d_prompt(text, json_schema)
+        prompt = build_t2d_prompt(text, json_schema, fewshots=fewshots)
         attempts = self._max_retries
 
         last_error: Exception = ParseError("backend produced no output")

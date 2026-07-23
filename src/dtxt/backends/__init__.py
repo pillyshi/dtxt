@@ -12,15 +12,25 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from .base import Backend
-from .mock import MockBackend
+from .base import Backend, Embedder
+from .mock import MockBackend, MockEmbedder
 
-__all__ = ["Backend", "MockBackend", "Anthropic", "OpenAI", "LlamaCpp"]
+__all__ = [
+    "Backend",
+    "Embedder",
+    "MockBackend",
+    "MockEmbedder",
+    "Anthropic",
+    "OpenAI",
+    "LlamaCpp",
+    "SentenceTransformersEmbedder",
+]
 
 _LAZY: dict[str, tuple[str, str]] = {
     "Anthropic": (".anthropic", "Anthropic"),
     "OpenAI": (".openai", "OpenAI"),
     "LlamaCpp": (".llamacpp", "LlamaCpp"),
+    "SentenceTransformersEmbedder": (".sentence_transformers", "SentenceTransformersEmbedder"),
 }
 
 

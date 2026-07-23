@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-07-23
+
+### Added
+
+- `StructuredEntityExtractor(backend, schema, *, fewshots=None, embedder=None,
+  fewshot_k=3)`: optional few-shot example retrieval for T2D. `fewshots` is a
+  fixed pool of `(text, obj)` pairs; each `extract()`/`extract_many()` call
+  embeds the input text via `embedder` and includes the `fewshot_k` most
+  similar examples (cosine similarity) in the prompt. `embedder` defaults to
+  `dtxt.backends.SentenceTransformersEmbedder` (a small multilingual model)
+  when `fewshots` is given but no embedder is passed. Leaving `fewshots`
+  unset (default) reproduces the exact prompt used before this change --
+  fully backward compatible. `extract_many()` and the asyncio batch path
+  embed all query texts in a single batched call rather than one call per
+  text.
+- `dtxt.backends.Embedder` protocol (`embed(texts) -> list[list[float]]`)
+  and `dtxt.backends.SentenceTransformersEmbedder`, a lazily-imported
+  wrapper around `sentence-transformers` (new `dtxt[sentence-transformers]`
+  extra, included in `dtxt[all]`). `dtxt.backends.MockEmbedder` added for
+  testing.
+
 ## [0.8.0] - 2026-07-23
 
 ### Changed (breaking)

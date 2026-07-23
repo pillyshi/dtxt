@@ -56,3 +56,23 @@ class MockBackend:
     @property
     def capabilities(self) -> set[str]:
         return self._capabilities
+
+
+class MockEmbedder:
+    """A deterministic, in-process embedder used for unit tests.
+
+    Vectors are supplied explicitly per text so tests can control
+    similarity rankings precisely; embedding an unregistered text raises,
+    rather than silently returning a zero/garbage vector.
+    """
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self._vectors = vectors
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        try:
+            return [self._vectors[text] for text in texts]
+        except KeyError as exc:
+            raise KeyError(f"MockEmbedder has no vector registered for {exc.args[0]!r}") from exc
